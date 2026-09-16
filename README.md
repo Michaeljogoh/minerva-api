@@ -1,6 +1,7 @@
 # Minerva Browser Agent API
 
 Minerva Browser Agent API is a NestJS backend that runs a browser automation agent for accounting workflows. A client sends a natural-language goal over Socket.IO; the server spins up a cloud browser (Browserbase), drives it with Stagehand, and reasons with Google Gemini via ADK. Results are Zod-validated structured outputs. Sensitive actions require human approval.
+
 ---
 
 ## Overview
@@ -161,10 +162,4 @@ Copy [`.env.example`](./.env.example) to `.env`.
 
 ---
 
-## Deploy
 
-Host on Railway or Fly.io (2 vCPU / 4GB recommended) with managed Postgres and Redis. Build from the [`Dockerfile`](./Dockerfile).
-
-Suggested CI: lint → `npm test` → `npm run test:eval` → Docker build.
-
-This repo is backend only. The Next.js client lives elsewhere and connects via the Socket.IO contract above.
