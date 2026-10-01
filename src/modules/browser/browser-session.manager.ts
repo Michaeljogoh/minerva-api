@@ -13,8 +13,8 @@ import { ScreenshotStore } from './screenshot.store';
 export type { BrowserSession } from './browser-session.types';
 
 @Injectable()
-export class BrowserbaseManager implements OnModuleDestroy {
-  private readonly logger = new Logger(BrowserbaseManager.name);
+export class BrowserSessionManager implements OnModuleDestroy {
+  private readonly logger = new Logger(BrowserSessionManager.name);
 
   constructor(
     private readonly sessionStore: SessionStore,
@@ -23,7 +23,10 @@ export class BrowserbaseManager implements OnModuleDestroy {
     private readonly factory: BrowserSessionFactory,
   ) {}
 
-  async createBrowserSession(clientId: string, goal = ''): Promise<string> {
+  async createBrowserSession(
+    clientId: string,
+    goal = '',
+  ): Promise<{ sessionId: string; liveUrl: string }> {
     if (this.registry.has(clientId)) {
       await this.closeBrowserSession(clientId);
     }
@@ -34,11 +37,15 @@ export class BrowserbaseManager implements OnModuleDestroy {
 
     this.sessionStore.set(clientId, {
       clientId,
-      browserbaseSessionId: created.browserbaseSessionId,
+      browserSessionId: created.browserSessionId,
+      liveUrl: created.liveUrl,
       createdAt: created.live.createdAt.toISOString(),
     });
 
-    return created.browserbaseSessionId;
+    return {
+      sessionId: created.browserSessionId,
+      liveUrl: created.liveUrl,
+    };
   }
 
   hasLiveSession(clientId: string): boolean {
@@ -74,13 +81,11 @@ export class BrowserbaseManager implements OnModuleDestroy {
   }
 
   getLiveSessionUrl(clientId: string): string {
-    const meta = this.sessionStore.get(clientId);
-    const sessionId =
-      meta?.browserbaseSessionId ?? this.registry.get(clientId)?.sessionId;
-    if (!sessionId) {
-      throw new Error(`No browser session for client ${clientId}`);
+    const fromLive = this.registry.get(clientId)?.liveUrl;
+    if (fromLive) {
+      return fromLive;
     }
-    return `https://www.browserbase.com/sessions/${sessionId}`;
+    return this.sessionStore.get(clientId)?.liveUrl ?? '';
   }
 
   async closeBrowserSession(
@@ -103,12 +108,14 @@ export class BrowserbaseManager implements OnModuleDestroy {
       );
     }
 
+    await this.factory.releaseSteelSession(live.sessionId);
+
     this.sessionStore.delete(clientId);
     this.screenshotStore.clearClient(clientId);
     await this.factory.finalizeRecord(live.recordId, opts);
 
     this.logger.log(
-      `Browserbase session ${live.sessionId} closed for client ${clientId}`,
+      `Steel session ${live.sessionId} closed for client ${clientId}`,
     );
   }
 

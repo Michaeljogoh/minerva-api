@@ -9,7 +9,12 @@ export interface HealthReport {
   checks: {
     api: { ok: true };
     postgres: { ok: boolean; latencyMs: number; error?: string };
-    redis: { ok: boolean; latencyMs: number; error?: string };
+    redis: {
+      ok: boolean;
+      latencyMs: number;
+      error?: string;
+      skipped?: boolean;
+    };
   };
 }
 
@@ -27,9 +32,12 @@ export class HealthService {
     ]);
 
     let status: HealthReport['status'] = 'ok';
-    if (!postgres.ok && !redis.ok) {
-      status = 'error';
-    } else if (!postgres.ok || !redis.ok) {
+    if (!postgres.ok) {
+      status = redis.skipped || redis.ok ? 'degraded' : 'error';
+      if (!redis.ok && !redis.skipped) {
+        status = 'error';
+      }
+    } else if (!redis.ok && !redis.skipped) {
       status = 'degraded';
     }
 

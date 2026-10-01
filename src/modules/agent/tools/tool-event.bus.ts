@@ -3,12 +3,23 @@ import { EventEmitter } from 'events';
 import type { TaskResult } from '@common/schemas/task-result.schemas';
 
 export type ToolEventMap = {
-  screenshot: { clientId: string; url: string; timestamp: number };
+  screenshot: {
+    clientId: string;
+    url: string;
+    timestamp: number;
+    step: number;
+    tool?: string;
+    caption?: string;
+    imageUrl: string;
+  };
   human_approval_required: {
     clientId: string;
     approvalId: string;
     question: string;
     context: string;
+    kind?: 'approval' | 'login' | 'connect';
+    connectUrl?: string;
+    appName?: string;
   };
   task_complete: {
     clientId: string;
@@ -20,6 +31,11 @@ export type ToolEventMap = {
     clientId: string;
     reason: string;
     timestamp: number;
+  };
+  live_view: {
+    clientId: string;
+    liveUrl: string;
+    sessionId: string;
   };
 };
 

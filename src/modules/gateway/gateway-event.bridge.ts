@@ -1,10 +1,10 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ToolEventBus } from '@modules/agent/tools/tool-event.bus';
-import { BrowserbaseManager } from '@modules/browser/browserbase.manager';
+import { BrowserSessionManager } from '@modules/browser/browser-session.manager';
+import type { TaskResult } from '@common/schemas/task-result.schemas';
 import {
   stepFromApproval,
   stepFromScreenshot,
-  taskResultFromCompletePayload,
 } from '@modules/persistence/session-step.mapper';
 import { SessionService } from '@modules/persistence/session.service';
 
@@ -29,7 +29,7 @@ export class GatewayEventBridge implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     private readonly toolEvents: ToolEventBus,
-    private readonly browsers: BrowserbaseManager,
+    private readonly browsers: BrowserSessionManager,
     private readonly sessions: SessionService,
   ) {}
 
@@ -42,6 +42,7 @@ export class GatewayEventBridge implements OnModuleInit, OnModuleDestroy {
     this.toolEvents.on('human_approval_required', this.onApprovalRequired);
     this.toolEvents.on('task_complete', this.onTaskComplete);
     this.toolEvents.on('browser_crash', this.onBrowserCrash);
+    this.toolEvents.on('live_view', this.onLiveView);
   }
 
   onModuleDestroy(): void {
@@ -49,6 +50,7 @@ export class GatewayEventBridge implements OnModuleInit, OnModuleDestroy {
     this.toolEvents.off('human_approval_required', this.onApprovalRequired);
     this.toolEvents.off('task_complete', this.onTaskComplete);
     this.toolEvents.off('browser_crash', this.onBrowserCrash);
+    this.toolEvents.off('live_view', this.onLiveView);
   }
 
   private recordIdFor(clientId: string): string | undefined {
@@ -59,16 +61,24 @@ export class GatewayEventBridge implements OnModuleInit, OnModuleDestroy {
     clientId: string;
     url: string;
     timestamp: number;
+    step: number;
+    tool?: string;
+    caption?: string;
+    imageUrl: string;
   }) => {
-    const recordId = this.recordIdFor(payload.clientId);
-    if (recordId) {
-      void this.sessions.appendStep(
-        recordId,
-        stepFromScreenshot(payload),
-      );
-    }
+    this.sessions.queueStep(
+      this.recordIdFor(payload.clientId),
+      stepFromScreenshot(payload),
+    );
     this.host?.emitToClient(payload.clientId, 'screenshot', {
       url: payload.url,
+      timestamp: payload.timestamp,
+    });
+    this.host?.emitToClient(payload.clientId, 'step_update', {
+      step: payload.step,
+      tool: payload.tool,
+      caption: payload.caption,
+      imageUrl: payload.imageUrl,
       timestamp: payload.timestamp,
     });
   };
@@ -78,21 +88,24 @@ export class GatewayEventBridge implements OnModuleInit, OnModuleDestroy {
     approvalId: string;
     question: string;
     context: string;
+    kind?: 'approval' | 'login' | 'connect';
+    connectUrl?: string;
+    appName?: string;
   }) => {
-    const recordId = this.recordIdFor(payload.clientId);
-    if (recordId) {
-      void this.sessions.appendStep(
-        recordId,
-        stepFromApproval({
-          timestamp: Date.now(),
-          question: payload.question,
-        }),
-      );
-    }
+    this.sessions.queueStep(
+      this.recordIdFor(payload.clientId),
+      stepFromApproval({
+        timestamp: Date.now(),
+        question: payload.question,
+      }),
+    );
     this.host?.emitToClient(payload.clientId, 'human_approval_required', {
       approvalId: payload.approvalId,
       question: payload.question,
       context: payload.context,
+      kind: payload.kind ?? 'approval',
+      connectUrl: payload.connectUrl,
+      appName: payload.appName,
     });
   };
 
@@ -104,14 +117,8 @@ export class GatewayEventBridge implements OnModuleInit, OnModuleDestroy {
   }) => {
     const recordId = this.recordIdFor(payload.clientId);
     if (recordId && payload.data && typeof payload.data === 'object') {
-      const result = taskResultFromCompletePayload({
-        data: payload.data as never,
-      });
-      void this.sessions.persistResult(
-        recordId,
-        result,
-        result.taskType,
-      );
+      const result = payload.data as TaskResult;
+      void this.sessions.persistResult(recordId, result, result.taskType);
     }
     this.host?.emitToClient(payload.clientId, 'task_complete', {
       timestamp: payload.timestamp,
@@ -137,6 +144,17 @@ export class GatewayEventBridge implements OnModuleInit, OnModuleDestroy {
     void this.host.haltClient(payload.clientId, {
       emitStopped: false,
       status: 'error',
+    });
+  };
+
+  private readonly onLiveView = (payload: {
+    clientId: string;
+    liveUrl: string;
+    sessionId: string;
+  }) => {
+    this.host?.emitToClient(payload.clientId, 'live_view', {
+      liveUrl: payload.liveUrl,
+      sessionId: payload.sessionId,
     });
   };
 }

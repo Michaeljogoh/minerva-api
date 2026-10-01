@@ -120,8 +120,8 @@ export const EVAL_CASES: EvalCase[] = [
   },
   {
     id: 'E9',
-    name: 'Extract table from portal',
-    goal: 'Extract the bank register table',
+    name: 'Extract table from Stripe dashboard',
+    goal: 'Extract the payout table from https://dashboard.stripe.com/payouts',
     fixtureTrace: e9ExtractTableTrace,
     assert: (trace) => [assertStructuredTableExtract(trace)],
   },

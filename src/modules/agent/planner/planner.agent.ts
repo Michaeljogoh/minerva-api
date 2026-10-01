@@ -1,12 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import {
-  InMemoryRunner,
-  LlmAgent,
-  isFinalResponse,
-  stringifyContent,
-  type Event,
-} from '@google/adk';
-import { PLANNER_AGENT_MODEL } from '@common/constants/agent.constants';
+  MODEL_PROVIDER,
+  type ModelProvider,
+} from '@modules/model/model-provider';
 import {
   agentPlanSchema,
   formatPlanForExecutor,
@@ -18,72 +14,38 @@ const PLANNER_INSTRUCTION = `You are a planning assistant for a browser automati
 
 Given a natural-language goal, produce an ordered plan of high-level browser steps.
 Infer the task type when possible:
-- month_end_exception: bank feed / books exceptions, categorize proposals, tax flags
-- tax_code_delta: IRS / tax research brief
+- month_end_exception: month-end close, bank/books exceptions, missing docs, categorize proposals, tax flags
+- tax_code_delta: multi-site tax / IRS research brief
+- commerce_reconciliation: Shopify + Stripe (or similar) order/payout matching
 - bank_rec_diff: bank reconciliation mismatches
 - receipt_chase: find missing receipts / chase vendors
 
-Do not invent URLs. Keep steps concrete and short. Output must match the schema.`;
+Use only real public websites named in the goal (for example https://www.irs.gov, https://admin.shopify.com, https://dashboard.stripe.com, https://mail.google.com, https://drive.google.com). Never plan localhost, ngrok, or fixture portals. Keep steps concrete and short. Output must match the schema.`;
 
-/**
- * Optional Gemini Pro upfront planning (§11.2).
- * Per-step Flash reasoning remains the MVP planning requirement.
- */
 @Injectable()
 export class PlannerAgent {
   private readonly logger = new Logger(PlannerAgent.name);
 
+  constructor(@Inject(MODEL_PROVIDER) private readonly model: ModelProvider) {}
+
   /**
    * Produce an ordered plan for the goal. Returns null on failure
-   * so the caller can fall back to Flash-only execution.
+   * so the caller can fall back to direct execution.
    */
   async plan(
     goal: string,
     taskType?: TaskType | null,
   ): Promise<AgentPlan | null> {
-    const agent = new LlmAgent({
-      name: 'browser-planner-agent',
-      description: 'Upfront planning for browser automation goals',
-      model: PLANNER_AGENT_MODEL,
-      instruction: PLANNER_INSTRUCTION,
-      outputSchema: agentPlanSchema,
-      disallowTransferToParent: true,
-      disallowTransferToPeers: true,
-    });
-
-    const runner = new InMemoryRunner({
-      agent,
-      appName: 'minerva-planner',
-    });
-
     const hint = taskType
       ? `Hinted task type: ${taskType}\n\nGoal:\n${goal}`
       : `Goal:\n${goal}`;
 
     try {
-      let lastFinal: Event | undefined;
-      for await (const event of runner.runEphemeral({
-        userId: 'planner',
-        newMessage: { role: 'user', parts: [{ text: hint }] },
-      })) {
-        if (isFinalResponse(event)) {
-          lastFinal = event;
-        }
-      }
-
-      if (!lastFinal) {
-        this.logger.warn('Planner produced no final response');
-        return null;
-      }
-
-      const text = stringifyContent(lastFinal).trim();
-      if (!text) {
-        this.logger.warn('Planner final response was empty');
-        return null;
-      }
-
-      const parsed: unknown = JSON.parse(text);
-      return agentPlanSchema.parse(parsed);
+      return await this.model.completeJson({
+        system: PLANNER_INSTRUCTION,
+        user: hint,
+        schema: agentPlanSchema,
+      });
     } catch (err) {
       this.logger.warn(
         `Planner failed; continuing without upfront plan: ${

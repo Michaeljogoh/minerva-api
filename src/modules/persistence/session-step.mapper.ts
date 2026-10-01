@@ -1,6 +1,5 @@
 import { randomUUID } from 'crypto';
 import type { ReasoningStep } from '@common/types/reasoning-step.types';
-import type { TaskResult } from '@common/schemas/task-result.schemas';
 
 export function createReasoningStep(
   step: Omit<ReasoningStep, 'id'>,
@@ -84,10 +83,4 @@ export function stepFromError(payload: {
     type: 'error',
     content: payload.error,
   };
-}
-
-export function taskResultFromCompletePayload(payload: {
-  data: TaskResult;
-}): TaskResult {
-  return payload.data;
 }

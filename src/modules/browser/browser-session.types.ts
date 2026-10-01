@@ -9,6 +9,7 @@ export interface BrowserSession {
   browserHandle: StagehandBrowser;
   page: StagehandPage;
   sessionId: string;
+  liveUrl: string;
   createdAt: Date;
   recordId: string;
 }

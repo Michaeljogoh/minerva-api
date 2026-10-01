@@ -1,19 +1,19 @@
-import { forwardRef, Module } from '@nestjs/common';
-import { PersistenceModule } from '@modules/persistence/persistence.module';
-import { RedisModule } from '@modules/redis/redis.module';
+import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { SessionRecordEntity } from '@modules/persistence/entities/session-record.entity';
 import { BrowserSessionFactory } from './browser-session.factory';
+import { BrowserSessionManager } from './browser-session.manager';
 import { BrowserSessionRegistry } from './browser-session.registry';
-import { BrowserbaseManager } from './browserbase.manager';
 import { ScreenshotStore } from './screenshot.store';
 
 @Module({
-  imports: [RedisModule, forwardRef(() => PersistenceModule)],
+  imports: [TypeOrmModule.forFeature([SessionRecordEntity])],
   providers: [
     BrowserSessionRegistry,
     BrowserSessionFactory,
-    BrowserbaseManager,
+    BrowserSessionManager,
     ScreenshotStore,
   ],
-  exports: [BrowserbaseManager, ScreenshotStore],
+  exports: [BrowserSessionManager, ScreenshotStore],
 })
 export class BrowserModule {}

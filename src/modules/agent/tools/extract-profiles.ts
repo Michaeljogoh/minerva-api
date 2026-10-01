@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 export const taskExtractProfileSchema = z.enum([
   'bank_rows',
+  'commerce_rows',
   'exception_table',
   'receipt_items',
   'irs_findings',
@@ -36,6 +37,27 @@ const bankRowsExtractSchema = z.object({
       date: z.string(),
       side: z.enum(['bank', 'books', 'matched']).optional(),
       status: z.string().optional(),
+    }),
+  ),
+});
+
+const commerceRowsExtractSchema = z.object({
+  rows: z.array(
+    z.object({
+      id: z.string().optional(),
+      source: z.enum(['shopify', 'stripe', 'bank', 'other']).optional(),
+      orderId: z.string().optional(),
+      payoutId: z.string().optional(),
+      description: z.string(),
+      saleDate: z.string().optional(),
+      payoutDate: z.string().optional(),
+      grossUsd: z.number().optional(),
+      taxUsd: z.number().optional(),
+      refundUsd: z.number().optional(),
+      feeUsd: z.number().optional(),
+      netUsd: z.number().optional(),
+      status: z.string().optional(),
+      exceptionReason: z.string().optional(),
     }),
   ),
 });
@@ -82,6 +104,7 @@ const customExtractSchema = z.record(z.string(), z.unknown());
 const profileSchemas = {
   exception_table: exceptionTableExtractSchema,
   bank_rows: bankRowsExtractSchema,
+  commerce_rows: commerceRowsExtractSchema,
   receipt_items: receiptItemsExtractSchema,
   irs_findings: irsFindingsExtractSchema,
 } as const satisfies Record<TaskExtractProfile, z.ZodType>;

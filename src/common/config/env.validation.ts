@@ -1,6 +1,6 @@
 /**
  * Boot validation. Secrets may be empty in test; development and production
- * require GEMINI_API_KEY so ADK + Stagehand can run.
+ * require OPENAI_API_KEY so the agent + Stagehand can run.
  */
 export function validateEnv(
   config: Record<string, unknown>,
@@ -19,17 +19,19 @@ export function validateEnv(
   }
 
   if (nodeEnv !== 'test') {
-    if (!String(config.GEMINI_API_KEY ?? '').trim()) {
+    if (!String(config.OPENAI_API_KEY ?? '').trim()) {
       throw new Error(
-        'GEMINI_API_KEY is required. Add it to .env — create a key at https://aistudio.google.com/apikey',
+        'OPENAI_API_KEY is required. Add it to .env — create a key at https://platform.openai.com/api-keys',
       );
+    }
+    if (!String(config.OPENAI_MODEL ?? '').trim()) {
+      throw new Error('OPENAI_MODEL is required.');
     }
   }
 
   if (nodeEnv === 'production') {
     const required = [
-      'BROWSERBASE_API_KEY',
-      'BROWSERBASE_PROJECT_ID',
+      'STEEL_API_KEY',
       'FRONTEND_URL',
       'GATEWAY_API_KEY',
     ] as const;
