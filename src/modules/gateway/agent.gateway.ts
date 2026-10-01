@@ -15,7 +15,7 @@ import { z } from 'zod';
 import type { ReasoningStep } from '@common/types/reasoning-step.types';
 import { TaskControlService } from '@modules/agent/task/task-control.service';
 import { ApprovalService } from '@modules/agent/approval/approval.service';
-import { BrowserbaseManager } from '@modules/browser/browserbase.manager';
+import { BrowserSessionManager } from '@modules/browser/browser-session.manager';
 import { taskTypeSchema } from '@common/schemas/task-result.schemas';
 import {
   stepFromAgentAction,
@@ -26,7 +26,8 @@ import {
 import { SessionService } from '@modules/persistence/session.service';
 import { RateLimitService } from '@modules/security/rate-limit.service';
 import { GatewayAuthService } from '@modules/security/gateway-auth.service';
-import { mapAdkEventToProtocol } from './adk-event.mapper';
+import { LIVE_VIEW_CLIENT_REFRESH_MIN_MS } from '@common/constants/session-lifecycle.constants';
+import type { ProtocolOutbound } from './adk-event.mapper';
 import { GatewayEventBridge } from './gateway-event.bridge';
 import { TaskRunCoordinator } from './task-run.coordinator';
 
@@ -46,12 +47,8 @@ const injectGuidanceSchema = z.object({
   message: z.string().min(1),
 });
 
-@WebSocketGateway({
-  cors: {
-    origin: process.env.FRONTEND_URL ?? 'http://localhost:3000',
-    credentials: true,
-  },
-})
+/** CORS is applied at bootstrap via CorsIoAdapter (ConfigService frontendUrl). */
+@WebSocketGateway()
 export class AgentGateway
   implements OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit
 {
@@ -63,10 +60,11 @@ export class AgentGateway
   private readonly running = new Set<string>();
   private readonly clientIps = new Map<string, string>();
   private readonly lastReasoning = new Map<string, { value: string }>();
+  private readonly lastLiveViewRefreshAt = new Map<string, number>();
 
   constructor(
     private readonly config: ConfigService,
-    private readonly browsers: BrowserbaseManager,
+    private readonly browsers: BrowserSessionManager,
     private readonly taskControl: TaskControlService,
     private readonly approvals: ApprovalService,
     private readonly rateLimit: RateLimitService,
@@ -105,6 +103,7 @@ export class AgentGateway
     this.approvals.rejectAllForClient(client.id);
     await this.haltClient(client.id, { emitStopped: false, status: 'stopped' });
     this.clientIps.delete(client.id);
+    this.lastLiveViewRefreshAt.delete(client.id);
   }
 
   @SubscribeMessage('start_task')
@@ -144,6 +143,12 @@ export class AgentGateway
     const abortSignal = this.taskControl.beginRun(client.id);
 
     try {
+      const ifRunning = (fn: () => void) => {
+        if (this.running.has(client.id)) {
+          fn();
+        }
+      };
+
       await this.taskRuns.execute({
         clientId: client.id,
         goal: parsed.data.goal,
@@ -151,44 +156,34 @@ export class AgentGateway
         usePlanner: parsed.data.usePlanner,
         abortSignal,
         lastReasoning: this.lastReasoning.get(client.id) ?? { value: '' },
-        mapEvent: mapAdkEventToProtocol,
         callbacks: {
           onBrowserReady: ({ liveUrl, sessionId }) => {
-            if (!this.running.has(client.id)) {
-              return;
-            }
-            client.emit('browser_ready', { liveUrl, sessionId });
+            ifRunning(() => client.emit('browser_ready', { liveUrl, sessionId }));
           },
           onScreenshotOnlyNotice: () => {
-            if (!this.running.has(client.id)) {
-              return;
-            }
-            client.emit('agent_reasoning', {
-              timestamp: Date.now(),
-              thought:
-                'Live session URL unavailable — running in screenshot-only mode; page state will stream via screenshots after each action.',
-            });
+            ifRunning(() =>
+              client.emit('agent_reasoning', {
+                timestamp: Date.now(),
+                thought:
+                  'Live session URL unavailable — running in screenshot-only mode; page state will stream via screenshots after each action.',
+              }),
+            );
           },
           onAgentReasoning: (thought) => {
-            if (!this.running.has(client.id)) {
-              return;
-            }
-            const event = { timestamp: Date.now(), thought };
-            this.recordClientStep(client.id, stepFromAgentReasoning(event));
-            client.emit('agent_reasoning', event);
+            ifRunning(() => {
+              const event = { timestamp: Date.now(), thought };
+              this.recordClientStep(client.id, stepFromAgentReasoning(event));
+              client.emit('agent_reasoning', event);
+            });
           },
-          onProtocolEvent: (name, payload) => {
-            if (!this.running.has(client.id)) {
-              return;
-            }
-            this.recordProtocolStep(client.id, name, payload);
-            client.emit(name, payload);
+          onProtocolEvent: (event) => {
+            ifRunning(() => {
+              this.recordProtocolStep(client.id, event);
+              client.emit(event.name, event.payload);
+            });
           },
           onError: (message, opts) => {
-            if (!this.running.has(client.id)) {
-              return;
-            }
-            this.emitError(client.id, message, opts);
+            ifRunning(() => this.emitError(client.id, message, opts));
           },
         },
       });
@@ -263,6 +258,32 @@ export class AgentGateway
     this.taskControl.queueGuidance(client.id, parsed.data.message);
   }
 
+  @SubscribeMessage('refresh_live_view')
+  async onRefreshLiveView(@ConnectedSocket() client: Socket): Promise<void> {
+    if (!this.browsers.hasLiveSession(client.id)) {
+      return;
+    }
+    const lastAt = this.lastLiveViewRefreshAt.get(client.id) ?? 0;
+    if (Date.now() - lastAt < LIVE_VIEW_CLIENT_REFRESH_MIN_MS) {
+      return;
+    }
+    this.lastLiveViewRefreshAt.set(client.id, Date.now());
+    try {
+      const liveUrl = await this.browsers.getLiveSessionUrl(client.id);
+      const sessionId = this.browsers.getBrowserSession(client.id)?.sessionId;
+      if (!sessionId) {
+        return;
+      }
+      client.emit('live_view', { liveUrl, sessionId });
+    } catch (err) {
+      this.logger.warn(
+        `Live view refresh failed for ${client.id}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
   @SubscribeMessage('stop_task')
   async onStopTask(@ConnectedSocket() client: Socket): Promise<void> {
     await this.haltClient(client.id, { emitStopped: true, status: 'stopped' });
@@ -279,6 +300,7 @@ export class AgentGateway
       this.emitToClient(clientId, 'task_stopped', { timestamp: Date.now() });
     }
     await this.browsers.closeBrowserSession(clientId, { status: opts.status });
+    this.lastLiveViewRefreshAt.delete(clientId);
     if (wasRunning) {
       const ip = this.clientIps.get(clientId) ?? 'unknown';
       this.rateLimit.releaseSession(ip, clientId);
@@ -315,58 +337,29 @@ export class AgentGateway
     clientId: string,
     step: Omit<ReasoningStep, 'id'>,
   ): void {
-    const recordId = this.browsers.getBrowserSession(clientId)?.recordId;
-    if (!recordId) {
-      return;
-    }
-    void this.sessions.appendStep(recordId, step);
+    this.sessions.queueStep(
+      this.browsers.getBrowserSession(clientId)?.recordId,
+      step,
+    );
   }
 
   private recordProtocolStep(
     clientId: string,
-    name: string,
-    payload: unknown,
+    event: ProtocolOutbound,
   ): void {
-    if (!payload || typeof payload !== 'object') {
-      return;
-    }
-    const data = payload as Record<string, unknown>;
-    if (name === 'agent_action') {
-      if (
-        typeof data.timestamp === 'number' &&
-        typeof data.tool === 'string' &&
-        typeof data.reasoning === 'string' &&
-        data.args &&
-        typeof data.args === 'object'
-      ) {
+    switch (event.name) {
+      case 'agent_reasoning':
+        this.recordClientStep(clientId, stepFromAgentReasoning(event.payload));
+        break;
+      case 'agent_action':
+        this.recordClientStep(clientId, stepFromAgentAction(event.payload));
+        break;
+      case 'agent_observation':
         this.recordClientStep(
           clientId,
-          stepFromAgentAction({
-            timestamp: data.timestamp,
-            tool: data.tool,
-            args: data.args as Record<string, unknown>,
-            reasoning: data.reasoning,
-          }),
+          stepFromAgentObservation(event.payload),
         );
-      }
-      return;
-    }
-    if (name === 'agent_observation') {
-      if (
-        typeof data.timestamp === 'number' &&
-        typeof data.tool === 'string' &&
-        typeof data.success === 'boolean'
-      ) {
-        this.recordClientStep(
-          clientId,
-          stepFromAgentObservation({
-            timestamp: data.timestamp,
-            tool: data.tool,
-            result: data.result,
-            success: data.success,
-          }),
-        );
-      }
+        break;
     }
   }
 

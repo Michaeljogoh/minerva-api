@@ -11,6 +11,14 @@ import type { TaskResult, TaskType } from '@common/schemas/task-result.schemas';
 
 export type SessionStatus = 'complete' | 'stopped' | 'error' | 'running';
 
+export interface SessionScreenshotEntry {
+  step: number;
+  tool?: string;
+  caption?: string;
+  imageUrl: string;
+  timestamp: number;
+}
+
 @Entity({ name: 'session_records' })
 export class SessionRecordEntity {
   @PrimaryGeneratedColumn('uuid')
@@ -35,6 +43,9 @@ export class SessionRecordEntity {
 
   @Column({ type: 'jsonb', default: () => "'[]'" })
   steps!: ReasoningStep[];
+
+  @Column({ type: 'jsonb', default: () => "'[]'" })
+  screenshots!: SessionScreenshotEntry[];
 
   @Column({ type: 'jsonb', nullable: true })
   result!: TaskResult | null;

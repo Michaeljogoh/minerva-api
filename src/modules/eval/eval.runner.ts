@@ -17,7 +17,7 @@ import type { TaskType } from '@common/schemas/task-result.schemas';
 /**
  * Offline / fixture eval runner (§14).
  * Scores recorded protocol traces against case assertions (CI-safe).
- * Live Browserbase+Gemini runs can feed the same {@link EvalTrace} shape later.
+ * Live Steel+OpenAI runs can feed the same {@link EvalTrace} shape later.
  */
 @Injectable()
 export class EvalRunner {

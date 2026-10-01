@@ -1,21 +1,17 @@
 import { Injectable, Logger } from '@nestjs/common';
-import {
-  InMemoryRunner,
-  LlmAgent,
-  type Event,
-} from '@google/adk';
 import type { TaskType } from '@common/schemas/task-result.schemas';
 import {
-  BROWSER_AGENT_DESCRIPTION,
   BROWSER_AGENT_INSTRUCTION,
-  BROWSER_AGENT_MODEL,
   BROWSER_AGENT_NAME,
+  TASK_SCHEMA_HINTS,
 } from '@common/constants/agent.constants';
 import { runWithLlmRetry } from './recovery/error-recovery';
 import { PlannerAgent } from './planner/planner.agent';
 import { TaskControlService } from './task/task-control.service';
 import { StagehandToolsService } from './tools/stagehand.tools';
 import { ToolSessionContext } from './tools/tool-session.context';
+import type { AgentEventLike } from './orchestrator/agent-event';
+import { ToolCallingOrchestrator } from './orchestrator/tool-calling.orchestrator';
 
 export interface RunGoalParams {
   clientId: string;
@@ -23,7 +19,7 @@ export interface RunGoalParams {
   taskType?: TaskType | null;
   /** When liveUrl is unavailable — screenshot-only degradation (§13.4). */
   screenshotOnly?: boolean;
-  /** Optional Gemini Pro upfront plan (§11.2). Default false. */
+  /** Optional upfront plan. Default false. */
   usePlanner?: boolean;
   abortSignal?: AbortSignal;
   /** Called before LLM retry backoff sleeps (§13.3 / §13.4). */
@@ -34,71 +30,25 @@ export interface RunGoalParams {
   ) => void | Promise<void | { handledDelay?: boolean }>;
 }
 
-/**
- * ADK browser agent + system instruction + tools (§11.1).
- *
- * Uses {@link InMemoryRunner.runAsync} for the tool-calling loop. Socket
- * streaming maps ADK events onto the public protocol in the gateway (Step 10).
- * ADK `runLive` is reserved for Live API media sessions, not this text/tool loop.
- */
 @Injectable()
 export class BrowserAgent {
   private readonly logger = new Logger(BrowserAgent.name);
-  private llmAgent: LlmAgent | null = null;
 
   constructor(
     private readonly tools: StagehandToolsService,
     private readonly toolCtx: ToolSessionContext,
     private readonly planner: PlannerAgent,
     private readonly taskControl: TaskControlService,
+    private readonly orchestrator: ToolCallingOrchestrator,
   ) {}
-
-  /** Lazily build the Flash agent with Stagehand browser tools. */
-  getAgent(): LlmAgent {
-    if (!this.llmAgent) {
-      this.llmAgent = new LlmAgent({
-        name: BROWSER_AGENT_NAME,
-        description: BROWSER_AGENT_DESCRIPTION,
-        model: BROWSER_AGENT_MODEL,
-        instruction: () => this.buildInstruction(),
-        tools: this.tools.createTools(),
-        disallowTransferToParent: true,
-        disallowTransferToPeers: true,
-        beforeToolCallback: async (_params) => {
-          const clientId = this.toolCtx.requireClientId();
-          await this.taskControl.waitIfPaused(clientId);
-          return undefined;
-        },
-        beforeModelCallback: async ({ request }) => {
-          let clientId: string;
-          try {
-            clientId = this.toolCtx.requireClientId();
-          } catch {
-            return undefined;
-          }
-          const guidance = this.taskControl.drainGuidance(clientId);
-          if (guidance) {
-            request.contents.push({
-              role: 'user',
-              parts: [
-                {
-                  text: `Human guidance (follow on the next steps):\n${guidance}`,
-                },
-              ],
-            });
-          }
-          return undefined;
-        },
-      });
-    }
-    return this.llmAgent;
-  }
 
   /**
    * Run a goal for a connected client. Sets tool session context for the
    * duration of the async generator, then clears it.
    */
-  async *runGoal(params: RunGoalParams): AsyncGenerator<Event, void, undefined> {
+  async *runGoal(
+    params: RunGoalParams,
+  ): AsyncGenerator<AgentEventLike, void, undefined> {
     const {
       clientId,
       goal,
@@ -115,20 +65,21 @@ export class BrowserAgent {
 
     yield* this.toolCtx.bindGenerator(
       { clientId, taskType, screenshotOnly },
-      () => this.runGoalInner({
-        clientId,
-        goal,
-        taskType,
-        usePlanner,
-        abortSignal,
-        onLlmRetry,
-      }),
+      () =>
+        this.runGoalInner({
+          clientId,
+          goal,
+          taskType,
+          usePlanner,
+          abortSignal,
+          onLlmRetry,
+        }),
     );
   }
 
   private async *runGoalInner(
     params: Omit<RunGoalParams, 'screenshotOnly'>,
-  ): AsyncGenerator<Event, void, undefined> {
+  ): AsyncGenerator<AgentEventLike, void, undefined> {
     const {
       clientId,
       goal,
@@ -140,29 +91,26 @@ export class BrowserAgent {
 
     try {
       const message = await this.buildUserMessage(goal, taskType, usePlanner);
+      const agentTools = this.tools.createTools();
       const self = this;
 
       yield* runWithLlmRetry(
-        async function* (attempt: number) {
-          const runner = new InMemoryRunner({
-            agent: self.getAgent(),
-            appName: 'minerva-browser-agent',
-          });
-
-          const session = await runner.sessionService.createSession({
-            appName: runner.appName,
-            userId: clientId,
-          });
-
+        async function* () {
           self.logger.log(
-            `runGoal clientId=${clientId} sessionId=${session.id} attempt=${attempt + 1} taskType=${taskType ?? 'infer'}`,
+            `runGoal clientId=${clientId} taskType=${taskType ?? 'infer'}`,
           );
 
-          yield* runner.runAsync({
-            userId: clientId,
-            sessionId: session.id,
-            newMessage: { role: 'user', parts: [{ text: message }] },
+          yield* self.orchestrator.run({
+            system: BROWSER_AGENT_INSTRUCTION,
+            userMessage: message,
+            tools: agentTools,
+            author: BROWSER_AGENT_NAME,
             abortSignal,
+            beforeTool: async () => {
+              await self.taskControl.waitIfPaused(clientId);
+            },
+            injectGuidance: () =>
+              self.taskControl.drainGuidance(clientId) || null,
           });
         },
         {
@@ -191,13 +139,10 @@ export class BrowserAgent {
     }
 
     if (taskType) {
-      return `Active task type: ${taskType}\n\nValidate done.extracted_data against this schema.\n\nGoal:\n${goal}`;
+      const hint = TASK_SCHEMA_HINTS[taskType] ?? '';
+      return `Active task type: ${taskType}\n\nValidate done.extractedData against this schema.\n${hint}\n\nGoal:\n${goal}`;
     }
 
     return goal;
-  }
-
-  private buildInstruction(): string {
-    return BROWSER_AGENT_INSTRUCTION;
   }
 }

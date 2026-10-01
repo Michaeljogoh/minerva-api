@@ -13,6 +13,8 @@ interface PendingApproval {
   timer: NodeJS.Timeout;
 }
 
+export type ApprovalKind = 'approval' | 'login' | 'connect';
+
 @Injectable()
 export class ApprovalService {
   private readonly pending = new Map<string, PendingApproval>();
@@ -27,6 +29,9 @@ export class ApprovalService {
     sessionId: string;
     question: string;
     context: string;
+    kind?: ApprovalKind;
+    connectUrl?: string;
+    appName?: string;
   }): Promise<{ approved: boolean; humanResponse?: string; observation: string }> {
     const approvalId = `${params.sessionId}-${Date.now()}`;
     const now = Date.now();
@@ -58,6 +63,9 @@ export class ApprovalService {
         approvalId,
         question: params.question,
         context: params.context,
+        kind: params.kind ?? 'approval',
+        connectUrl: params.connectUrl,
+        appName: params.appName,
       });
     });
 

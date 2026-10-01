@@ -1,20 +1,33 @@
 export default () => {
-  const geminiApiKey = process.env.GEMINI_API_KEY ?? '';
-  syncGeminiProcessEnv(geminiApiKey);
-
   return {
   nodeEnv: process.env.NODE_ENV ?? 'development',
   port: parsePositiveInt(process.env.PORT, 3001),
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
 
-  // Agent browser is always Browserbase cloud Chromium (no local Chromium mode).
-  browserbase: {
-    apiKey: process.env.BROWSERBASE_API_KEY ?? '',
-    projectId: process.env.BROWSERBASE_PROJECT_ID ?? '',
+  openai: {
+    apiKey: process.env.OPENAI_API_KEY ?? '',
+    /** Single model for agent, planner, and Stagehand (unless overridden). */
+    model: process.env.OPENAI_MODEL ?? 'gpt-5.6-luna',
+    plannerModel:
+      process.env.OPENAI_PLANNER_MODEL?.trim() ||
+      process.env.OPENAI_MODEL?.trim() ||
+      'gpt-5.6-luna',
+    /** Optional override; provider picks model-appropriate default when unset. */
+    reasoningEffort: process.env.OPENAI_REASONING_EFFORT?.trim() ?? '',
+    stagehandModel:
+      process.env.OPENAI_STAGEHAND_MODEL?.trim() ||
+      toStagehandModelId(
+        process.env.OPENAI_MODEL?.trim() || 'gpt-5.6-luna',
+      ),
   },
 
-  gemini: {
-    apiKey: geminiApiKey,
+  steel: {
+    apiKey: process.env.STEEL_API_KEY ?? '',
+  },
+
+  pinecone: {
+    apiKey: process.env.PINECONE_API_KEY ?? '',
+    index: process.env.PINECONE_INDEX ?? '',
   },
 
   database: {
@@ -28,19 +41,23 @@ export default () => {
     logging: (process.env.NODE_ENV ?? 'development') === 'development',
   },
   
+  /** Redis stays off for now (in-memory session store). */
   redis: {
-    url: process.env.REDIS_URL ?? 'redis://localhost:6379',
-    host: process.env.REDIS_HOST ?? 'localhost',
-    port: parsePositiveInt(process.env.REDIS_PORT, 6379),
-    password: process.env.REDIS_PASSWORD ?? '',
-    sessionTtlSeconds: parsePositiveInt(process.env.SESSION_TTL_SECONDS, 3600),
+    enabled: false,
+    url: 'redis://localhost:6379',
+    host: 'localhost',
+    port: 6379,
+    password: '',
+    sessionTtlSeconds: 3600,
   },
   
   security: {
-    urlAllowlist: parseCsv(process.env.URL_ALLOWLIST, [
-      'irs.gov',
-      'www.irs.gov',
-    ]),
+    urlPolicyMode:
+      (process.env.URL_POLICY_MODE ?? 'public').trim().toLowerCase() ===
+      'allowlist'
+        ? 'allowlist'
+        : 'public',
+    urlAllowlist: parseCsv(process.env.URL_ALLOWLIST, []),
     maxSessionsPerIp: parsePositiveInt(process.env.MAX_SESSIONS_PER_IP, 5),
     maxActionsPerSession: parsePositiveInt(
       process.env.MAX_ACTIONS_PER_SESSION,
@@ -49,22 +66,22 @@ export default () => {
     gatewayApiKey: process.env.GATEWAY_API_KEY ?? '',
     trustProxy: parseBoolean(process.env.TRUST_PROXY, false),
   },
+
+  composio: {
+    apiKey: process.env.COMPOSIO_API_KEY ?? '',
+    userId: process.env.COMPOSIO_USER_ID ?? 'minerva-demo',
+  },
   };
 };
 
-/** ADK + Stagehand read GEMINI_API_KEY / GOOGLE_API_KEY from process.env. */
-function syncGeminiProcessEnv(apiKey: string): void {
-  if (!apiKey) {
-    return;
+/** Stagehand expects `openai/<id>` while the Chat Completions API uses bare ids. */
+const toStagehandModelId = (model: string): string => {
+  const trimmed = model.trim();
+  if (!trimmed) {
+    return 'openai/gpt-5.6-luna';
   }
-  if (!process.env.GEMINI_API_KEY) {
-    process.env.GEMINI_API_KEY = apiKey;
-  }
-  // @google/genai warns when both are set; keep a single canonical key.
-  if (process.env.GOOGLE_API_KEY && process.env.GEMINI_API_KEY) {
-    delete process.env.GOOGLE_API_KEY;
-  }
-}
+  return trimmed.startsWith('openai/') ? trimmed : `openai/${trimmed}`;
+};
 
 const parseCsv = (value: string | undefined, fallback: string[]): string[] => {
   if (!value?.trim()) {

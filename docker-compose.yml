@@ -15,16 +15,6 @@ services:
       timeout: 5s
       retries: 10
 
-  redis:
-    image: redis:7-alpine
-    ports:
-      - '6379:6379'
-    healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
   api:
     build: .
     ports:
@@ -33,13 +23,11 @@ services:
       - .env
     environment:
       DATABASE_URL: postgresql://minerva:minerva@postgres:5432/minerva_agent
-      REDIS_URL: redis://redis:6379
       PORT: '3001'
+      # Production validation requires GATEWAY_API_KEY + OPENAI_API_KEY + STEEL_API_KEY in .env
       NODE_ENV: production
     depends_on:
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
 
 volumes:

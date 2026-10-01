@@ -5,6 +5,7 @@ export const confidenceSchema = z.enum(['high', 'medium', 'low']);
 export const taskTypeSchema = z.enum([
   'month_end_exception',
   'tax_code_delta',
+  'commerce_reconciliation',
   'bank_rec_diff',
   'receipt_chase',
 ]);
@@ -36,6 +37,8 @@ export const taxCodeDeltaBriefResultSchema = z.object({
     rationale: z.string(),
     estimatedSavingsUsd: z.number().optional(),
   }),
+  recommendedActions: z.array(z.string()).optional(),
+  sourcesChecked: z.array(z.string()).optional(),
   confidence: confidenceSchema,
 });
 
@@ -62,6 +65,10 @@ export const monthEndExceptionReportSchema = z.object({
     }),
   ),
   taxBrief: taxCodeDeltaBriefResultSchema.optional(),
+  closeStatus: z.enum(['ready', 'blocked', 'needs_review']).optional(),
+  blockers: z.array(z.string()).optional(),
+  missingDocuments: z.array(z.string()).optional(),
+  checklist: z.array(z.string()).optional(),
   totals: z.object({
     exceptionCount: z.number(),
     approvedCount: z.number(),
@@ -72,6 +79,51 @@ export const monthEndExceptionReportSchema = z.object({
 
 export type MonthEndExceptionReport = z.infer<
   typeof monthEndExceptionReportSchema
+>;
+
+export const commerceReconciliationResultSchema = z.object({
+  clientName: z.string(),
+  period: z.string(),
+  connectedSources: z.array(z.string()),
+  rows: z.array(
+    z.object({
+      id: z.string(),
+      source: z.enum(['shopify', 'stripe', 'bank', 'other']),
+      orderId: z.string().optional(),
+      payoutId: z.string().optional(),
+      description: z.string(),
+      saleDate: z.string().optional(),
+      payoutDate: z.string().optional(),
+      grossUsd: z.number().optional(),
+      taxUsd: z.number().optional(),
+      refundUsd: z.number().optional(),
+      feeUsd: z.number().optional(),
+      netUsd: z.number(),
+      status: z.enum([
+        'matched',
+        'mismatch',
+        'missing_payout',
+        'needs_review',
+        'approved',
+      ]),
+      exceptionReason: z.string().optional(),
+      confidence: confidenceSchema,
+    }),
+  ),
+  totals: z.object({
+    grossUsd: z.number(),
+    taxUsd: z.number(),
+    refundUsd: z.number(),
+    feeUsd: z.number(),
+    netUsd: z.number(),
+    matchedCount: z.number(),
+    exceptionCount: z.number(),
+  }),
+  nextActions: z.array(z.string()),
+});
+
+export type CommerceReconciliationResult = z.infer<
+  typeof commerceReconciliationResultSchema
 >;
 
 export const bankRecDiffResultSchema = z.object({
@@ -138,6 +190,7 @@ export type ReceiptChaseResult = z.infer<typeof receiptChaseResultSchema>;
 export const taskExtractedDataSchema = z.union([
   monthEndExceptionReportSchema,
   taxCodeDeltaBriefResultSchema,
+  commerceReconciliationResultSchema,
   bankRecDiffResultSchema,
   receiptChaseResultSchema,
 ]);
@@ -159,6 +212,7 @@ export type TaskResult = z.infer<typeof taskResultSchema>;
 const schemaByTaskType = {
   month_end_exception: monthEndExceptionReportSchema,
   tax_code_delta: taxCodeDeltaBriefResultSchema,
+  commerce_reconciliation: commerceReconciliationResultSchema,
   bank_rec_diff: bankRecDiffResultSchema,
   receipt_chase: receiptChaseResultSchema,
 } as const;

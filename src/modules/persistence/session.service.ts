@@ -4,7 +4,10 @@ import { Repository } from 'typeorm';
 import type { ReasoningStep } from '@common/types/reasoning-step.types';
 import type { TaskResult, TaskType } from '@common/schemas/task-result.schemas';
 import { createReasoningStep } from './session-step.mapper';
-import { SessionRecordEntity } from './entities/session-record.entity';
+import {
+  SessionRecordEntity,
+  type SessionScreenshotEntry,
+} from './entities/session-record.entity';
 
 /**
  * PostgreSQL session queries (milestone B9).
@@ -44,6 +47,17 @@ export class SessionService {
     return record;
   }
 
+  /** Fire-and-forget append when a session record id is known. */
+  queueStep(
+    recordId: string | undefined,
+    step: Omit<ReasoningStep, 'id'>,
+  ): void {
+    if (!recordId) {
+      return;
+    }
+    void this.appendStep(recordId, step);
+  }
+
   /** Append a timeline step to a session record (best-effort, non-blocking). */
   async appendStep(
     recordId: string,
@@ -62,6 +76,37 @@ export class SessionService {
     } catch (err) {
       this.logger.warn(
         `Failed to append step to SessionRecord ${recordId}: ${String(err)}`,
+      );
+    }
+  }
+
+  queueScreenshot(
+    recordId: string | undefined,
+    entry: SessionScreenshotEntry,
+  ): void {
+    if (!recordId) {
+      return;
+    }
+    void this.appendScreenshot(recordId, entry);
+  }
+
+  async appendScreenshot(
+    recordId: string,
+    entry: SessionScreenshotEntry,
+  ): Promise<void> {
+    try {
+      const record = await this.sessions.findOne({
+        where: { id: recordId },
+        select: ['id', 'screenshots'],
+      });
+      if (!record) {
+        return;
+      }
+      record.screenshots = [...(record.screenshots ?? []), entry];
+      await this.sessions.save(record);
+    } catch (err) {
+      this.logger.warn(
+        `Failed to append screenshot to SessionRecord ${recordId}: ${String(err)}`,
       );
     }
   }

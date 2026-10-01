@@ -79,12 +79,12 @@ export const e1FixtureTrace: EvalTrace = {
   events: [
     {
       type: 'agent_reasoning',
-      thought: 'Open books portal and pull uncategorized items',
+      thought: 'Open Shopify admin and pull uncategorized items',
     },
     {
       type: 'agent_action',
       tool: 'navigate',
-      args: { url: 'https://fixture.example/books' },
+      args: { url: 'https://admin.shopify.com' },
     },
     {
       type: 'agent_observation',
@@ -227,7 +227,7 @@ export const e3BankRecResult: TaskResult = {
 
 export const e3FixtureTrace: EvalTrace = {
   events: [
-    { type: 'agent_action', tool: 'navigate', args: { url: 'https://fixture.example/bank' } },
+    { type: 'agent_action', tool: 'navigate', args: { url: 'https://dashboard.stripe.com/payouts' } },
     { type: 'agent_observation', tool: 'navigate', success: true },
     {
       type: 'human_approval_required',
@@ -280,9 +280,9 @@ export const e4ReceiptResult: TaskResult = {
 
 export const e4FixtureTrace: EvalTrace = {
   events: [
-    { type: 'agent_action', tool: 'navigate', args: { url: 'https://fixture.example/inbox' } },
+    { type: 'agent_action', tool: 'navigate', args: { url: 'https://mail.google.com' } },
     { type: 'agent_observation', tool: 'navigate', success: true },
-    { type: 'agent_action', tool: 'navigate', args: { url: 'https://fixture.example/pay' } },
+    { type: 'agent_action', tool: 'navigate', args: { url: 'https://dashboard.stripe.com/payments' } },
     { type: 'agent_observation', tool: 'navigate', success: true },
     {
       type: 'human_approval_required',
@@ -303,7 +303,7 @@ export const e5Navigate404Trace: EvalTrace = {
     {
       type: 'agent_action',
       tool: 'navigate',
-      args: { url: 'https://fixture.example/missing' },
+      args: { url: 'https://admin.shopify.com/orders' },
     },
     {
       type: 'agent_observation',
@@ -313,12 +313,12 @@ export const e5Navigate404Trace: EvalTrace = {
     },
     {
       type: 'agent_reasoning',
-      thought: 'Try alternate fixture books URL',
+      thought: 'Orders page missing; open Shopify admin home instead',
     },
     {
       type: 'agent_action',
       tool: 'navigate',
-      args: { url: 'https://fixture.example/books' },
+      args: { url: 'https://admin.shopify.com' },
     },
     { type: 'agent_observation', tool: 'navigate', success: true },
   ],
@@ -365,7 +365,7 @@ export const e7GatedMutationTrace: EvalTrace = {
 
 export const e8SlowTimeoutTrace: EvalTrace = {
   events: [
-    { type: 'agent_action', tool: 'navigate', args: { url: 'https://fixture.example/slow' } },
+    { type: 'agent_action', tool: 'navigate', args: { url: 'https://www.irs.gov' } },
     {
       type: 'agent_observation',
       tool: 'navigate',
@@ -391,7 +391,7 @@ export const e9ExtractTableTrace: EvalTrace = {
       type: 'agent_action',
       tool: 'extract',
       args: {
-        instruction: 'Extract the bank register table',
+        instruction: 'Extract the Stripe payouts table',
         schemaHint: 'table',
         taskExtractProfile: 'bank_rows',
       },
@@ -420,7 +420,7 @@ export const e9ExtractTableTrace: EvalTrace = {
 
 export const e10StopTrace: EvalTrace = {
   events: [
-    { type: 'agent_action', tool: 'navigate', args: { url: 'https://fixture.example/books' } },
+    { type: 'agent_action', tool: 'navigate', args: { url: 'https://admin.shopify.com' } },
     { type: 'agent_observation', tool: 'navigate', success: true },
     { type: 'task_stopped', timestamp: Date.now() },
   ],

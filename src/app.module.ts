@@ -10,6 +10,7 @@ import { GatewayModule } from '@modules/gateway/gateway.module';
 import { HealthModule } from '@modules/health/health.module';
 import { PersistenceModule } from '@modules/persistence/persistence.module';
 import { RedisModule } from '@modules/redis/redis.module';
+import { ComposioModule } from '@modules/composio/composio.module';
 import { SecurityModule } from '@modules/security/security.module';
 
 @Module({
@@ -20,6 +21,7 @@ import { SecurityModule } from '@modules/security/security.module';
       validate: validateEnv,
     }),
     SecurityModule,
+    ComposioModule,
     PersistenceModule,
     RedisModule,
     HealthModule,
