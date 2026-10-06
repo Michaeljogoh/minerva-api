@@ -3,12 +3,14 @@ import type {
   Page as StagehandPage,
   Stagehand,
 } from '@browserbasehq/stagehand';
+import type { ExternalModelConfig } from '@modules/model/external-model.types';
 import { SessionStore } from '@modules/redis/session.store';
 import { BROWSER_DEFERRED_CLOSE_MS } from '@common/constants/session-lifecycle.constants';
 import { BrowserSessionFactory } from './browser-session.factory';
 import { BrowserSessionRegistry } from './browser-session.registry';
 import type { BrowserCloseOpts, BrowserSession } from './browser-session.types';
 import { ScreenshotStore } from './screenshot.store';
+import { isBrowserConnectionLostError } from '@modules/agent/recovery/error-recovery';
 
 export type { BrowserSession } from './browser-session.types';
 
@@ -26,13 +28,14 @@ export class BrowserSessionManager implements OnModuleDestroy {
   async createBrowserSession(
     clientId: string,
     goal = '',
+    externalModel: ExternalModelConfig | null = null,
   ): Promise<{ sessionId: string; liveUrl: string }> {
     if (this.registry.has(clientId)) {
       await this.closeBrowserSession(clientId);
     }
     this.registry.cancelDeferredClose(clientId);
 
-    const created = await this.factory.create(clientId, goal);
+    const created = await this.factory.create(clientId, goal, externalModel);
     this.registry.set(clientId, created.live);
 
     this.sessionStore.set(clientId, {
@@ -88,6 +91,26 @@ export class BrowserSessionManager implements OnModuleDestroy {
     return this.sessionStore.get(clientId)?.liveUrl ?? '';
   }
 
+  /**
+   * Re-attach Stagehand to the same Steel browser after its connection dropped.
+   * The Steel session (tabs, page state) survives; only our link to it is rebuilt.
+   */
+  async reconnect(clientId: string): Promise<void> {
+    const live = this.requireLive(clientId);
+    await this.closeQuietly(clientId, 'Stagehand', () =>
+      live.stagehand.close(),
+    );
+    await this.closeQuietly(clientId, 'browser', () =>
+      live.browserHandle.close(),
+    );
+
+    const connection = await this.factory.connect(live.connectTarget);
+    this.registry.set(clientId, { ...live, ...connection });
+    this.logger.log(
+      `Reconnected Stagehand to Steel session ${live.sessionId} for client ${clientId}`,
+    );
+  }
+
   async closeBrowserSession(
     clientId: string,
     opts?: BrowserCloseOpts,
@@ -99,14 +122,12 @@ export class BrowserSessionManager implements OnModuleDestroy {
       return;
     }
 
-    try {
-      await live.stagehand.close();
-      await live.browserHandle.close();
-    } catch (err) {
-      this.logger.warn(
-        `Error closing browser for ${clientId}: ${String(err)}`,
-      );
-    }
+    await this.closeQuietly(clientId, 'Stagehand', () =>
+      live.stagehand.close(),
+    );
+    await this.closeQuietly(clientId, 'browser', () =>
+      live.browserHandle.close(),
+    );
 
     await this.factory.releaseSteelSession(live.sessionId);
 
@@ -125,6 +146,24 @@ export class BrowserSessionManager implements OnModuleDestroy {
         this.closeBrowserSession(id, { status: 'stopped' }),
       ),
     );
+  }
+
+  /** A connection that already dropped has nothing left to close; anything else is logged. */
+  private async closeQuietly(
+    clientId: string,
+    label: string,
+    close: () => Promise<void>,
+  ): Promise<void> {
+    try {
+      await close();
+    } catch (err) {
+      if (isBrowserConnectionLostError(err)) {
+        return;
+      }
+      this.logger.warn(
+        `Error closing ${label} for ${clientId}: ${String(err)}`,
+      );
+    }
   }
 
   private requireLive(clientId: string): BrowserSession {

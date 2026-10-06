@@ -8,8 +8,28 @@ import { ConfigService } from '@nestjs/config';
 export class RateLimitService {
   private readonly sessionsByIp = new Map<string, Set<string>>();
   private readonly actionsBySession = new Map<string, number>();
+  private readonly keyChecksByIp = new Map<string, number[]>();
 
   constructor(private readonly config: ConfigService) {}
+
+  private get maxKeyChecksPerMinute(): number {
+    return this.config.get<number>('security.maxKeyChecksPerMinute') ?? 10;
+  }
+
+  /** Sliding one-minute window so the key check can't be used to test keys in bulk. */
+  assertCanCheckModelKey(ip: string): void {
+    const key = ip || 'unknown';
+    const now = Date.now();
+    const recent = (this.keyChecksByIp.get(key) ?? []).filter(
+      (at) => now - at < 60_000,
+    );
+    if (recent.length >= this.maxKeyChecksPerMinute) {
+      this.keyChecksByIp.set(key, recent);
+      throw new Error('Too many key checks. Wait a minute and try again.');
+    }
+    recent.push(now);
+    this.keyChecksByIp.set(key, recent);
+  }
 
   private get maxSessionsPerIp(): number {
     return this.config.get<number>('security.maxSessionsPerIp') ?? 5;

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
 import { z } from 'zod';
@@ -9,14 +9,32 @@ import type {
   ModelChatMessage,
   ModelProvider,
 } from './model-provider';
+import { ExternalModelService } from './external-model.service';
+import {
+  MODEL_RUN_CONFIG,
+  type ModelRunConfigSource,
+} from './external-model.types';
 
+/**
+ * OpenAI Chat Completions client. When the current run carries a user key
+ * (OpenAI, or Gemini's OpenAI-compatible endpoint) that key and model are
+ * used; otherwise the server's own key and env models.
+ */
 @Injectable()
 export class OpenAiProvider implements ModelProvider {
   private client: OpenAI | null = null;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly externalModels: ExternalModelService,
+    @Inject(MODEL_RUN_CONFIG) private readonly runConfig: ModelRunConfigSource,
+  ) {}
 
   private getClient(): OpenAI {
+    const external = this.runConfig.getExternalModel();
+    if (external) {
+      return this.externalModels.clientFor(external);
+    }
     if (!this.client) {
       const apiKey = this.config.get<string>('openai.apiKey') ?? '';
       if (!apiKey) {
@@ -28,6 +46,10 @@ export class OpenAiProvider implements ModelProvider {
   }
 
   agentModel(override?: string): string {
+    const external = this.runConfig.getExternalModel();
+    if (external) {
+      return external.model;
+    }
     if (override?.trim()) {
       return override.trim();
     }
@@ -40,7 +62,13 @@ export class OpenAiProvider implements ModelProvider {
 
   /** Chat Completions `reasoning_effort`; model-dependent when env is unset. */
   reasoningEffort(model: string): OpenAI.ReasoningEffort | undefined {
-    const configured = this.config.get<string>('openai.reasoningEffort')?.trim();
+    const external = this.runConfig.getExternalModel();
+    if (external?.provider === 'gemini') {
+      return undefined;
+    }
+    const configured = external
+      ? undefined
+      : this.config.get<string>('openai.reasoningEffort')?.trim();
     if (configured) {
       return parseReasoningEffort(configured);
     }
@@ -55,6 +83,10 @@ export class OpenAiProvider implements ModelProvider {
   }
 
   plannerModel(override?: string): string {
+    const external = this.runConfig.getExternalModel();
+    if (external) {
+      return external.model;
+    }
     if (override?.trim()) {
       return override.trim();
     }
@@ -68,7 +100,19 @@ export class OpenAiProvider implements ModelProvider {
     return model;
   }
 
-  async chatWithTools(params: ChatWithToolsParams): Promise<ChatWithToolsResult> {
+  chatWithTools(params: ChatWithToolsParams): Promise<ChatWithToolsResult> {
+    return this.withRunErrors(() => this.requestChatWithTools(params));
+  }
+
+  completeJson<T extends z.ZodTypeAny>(
+    params: CompleteJsonParams<T>,
+  ): Promise<z.infer<T>> {
+    return this.withRunErrors(() => this.requestCompleteJson(params));
+  }
+
+  private async requestChatWithTools(
+    params: ChatWithToolsParams,
+  ): Promise<ChatWithToolsResult> {
     const client = this.getClient();
     const model = this.agentModel(params.model);
 
@@ -88,6 +132,10 @@ export class OpenAiProvider implements ModelProvider {
             parameters: tool.parameters,
           },
         })),
+        // Runs end only through the `done` tool, so a text-only reply would stall the loop.
+        ...(params.tools.length > 0
+          ? { tool_choice: 'required' as const }
+          : {}),
         ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
       },
       { signal: params.abortSignal },
@@ -118,7 +166,7 @@ export class OpenAiProvider implements ModelProvider {
     };
   }
 
-  async completeJson<T extends z.ZodTypeAny>(
+  private async requestCompleteJson<T extends z.ZodTypeAny>(
     params: CompleteJsonParams<T>,
   ): Promise<z.infer<T>> {
     const client = this.getClient();
@@ -152,6 +200,15 @@ export class OpenAiProvider implements ModelProvider {
     }
     const parsed: unknown = JSON.parse(text);
     return params.schema.parse(parsed);
+  }
+
+  private async withRunErrors<T>(request: () => Promise<T>): Promise<T> {
+    try {
+      return await request();
+    } catch (err) {
+      const external = this.runConfig.getExternalModel();
+      throw external ? this.externalModels.toRunError(err, external) : err;
+    }
   }
 }
 

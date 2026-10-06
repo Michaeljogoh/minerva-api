@@ -7,7 +7,12 @@ import Steel from 'steel-sdk';
 import type { StagehandBrowser } from '@browserbasehq/stagehand';
 import { SessionRecordEntity } from '@modules/persistence/entities/session-record.entity';
 import { STAGEHAND_DOM_SETTLE_MS } from '@common/constants/session-lifecycle.constants';
-import type { BrowserSession } from './browser-session.types';
+import type { ExternalModelConfig } from '@modules/model/external-model.types';
+import type {
+  BrowserSession,
+  StagehandConnectTarget,
+  StagehandConnection,
+} from './browser-session.types';
 import {
   chromeExtensionIdFromSteelId,
   discoverStagehandChromeExtensionId,
@@ -44,7 +49,11 @@ export class BrowserSessionFactory {
     private readonly sessionsRepo: Repository<SessionRecordEntity>,
   ) {}
 
-  async create(clientId: string, goal: string): Promise<CreatedBrowserSession> {
+  async create(
+    clientId: string,
+    goal: string,
+    externalModel: ExternalModelConfig | null = null,
+  ): Promise<CreatedBrowserSession> {
     const steelApiKey = this.steelApiKey();
     const createdAt = new Date();
 
@@ -62,7 +71,6 @@ export class BrowserSessionFactory {
     });
     await this.sessionsRepo.save(record);
 
-    let browserHandle: StagehandBrowser | null = null;
     let browserSessionId = '';
     let liveUrl = '';
 
@@ -103,32 +111,16 @@ export class BrowserSessionFactory {
       const chromeExtensionId =
         chromeExtensionIdFromSteelId(steelExtensionId) ??
         (await discoverStagehandChromeExtensionId(cdpUrl));
-      const { localBrowser, Stagehand } = await loadStagehandModule();
-      browserHandle = await connectLocalBrowserWithRetry(localBrowser, {
+      const connectTarget: StagehandConnectTarget = {
         cdpUrl,
         extensionId: chromeExtensionId,
-      });
-
-      const stagehand = await Stagehand.create({
-        browser: browserHandle,
-        model: {
-          modelName: this.stagehandModel() as never,
-          apiKey: this.openAiApiKey(),
-        },
-        // Steel has no Browserbase action cache; enabling it still walks every
-        // iframe for CDP trees and floods logs on iframe-heavy sites (IRS.gov).
-        cache: false,
-        domSettleTimeoutMs: STAGEHAND_DOM_SETTLE_MS,
-        logging: { level: 'warn', format: 'json' },
-      });
-
-      const pages = await browserHandle.context.pages();
-      const page = pages[0] ?? (await browserHandle.context.newPage());
+        externalModel,
+      };
+      const connection = await this.connect(connectTarget);
 
       const live: BrowserSession = {
-        stagehand,
-        browserHandle,
-        page,
+        ...connection,
+        connectTarget,
         sessionId: browserSessionId,
         liveUrl,
         createdAt,
@@ -149,15 +141,6 @@ export class BrowserSessionFactory {
       this.logger.error(
         `Stagehand connect failed for client ${clientId}, rolling back Steel session ${browserSessionId || 'unknown'}: ${formatUnknownError(err)}`,
       );
-      if (browserHandle) {
-        try {
-          await browserHandle.close();
-        } catch (closeErr) {
-          this.logger.warn(
-            `Failed to close browser handle for ${clientId}: ${String(closeErr)}`,
-          );
-        }
-      }
       if (browserSessionId) {
         await this.releaseSteelSession(browserSessionId);
       }
@@ -166,6 +149,38 @@ export class BrowserSessionFactory {
       } catch (dbErr) {
         this.logger.warn(
           `Failed to delete SessionRecord ${record.id}: ${String(dbErr)}`,
+        );
+      }
+      throw err;
+    }
+  }
+
+  /** Attach Stagehand to a running Steel browser; reused on reconnect. */
+  async connect(target: StagehandConnectTarget): Promise<StagehandConnection> {
+    const { localBrowser, Stagehand } = await loadStagehandModule();
+    const browserHandle = await connectLocalBrowserWithRetry(localBrowser, {
+      cdpUrl: target.cdpUrl,
+      extensionId: target.extensionId,
+    });
+
+    try {
+      const stagehand = await Stagehand.create({
+        browser: browserHandle,
+        model: this.stagehandModelConfig(target.externalModel),
+        cache: false,
+        domSettleTimeoutMs: STAGEHAND_DOM_SETTLE_MS,
+        logging: { level: 'warn', format: 'json' },
+      });
+
+      const pages = await browserHandle.context.pages();
+      const page = pages[0] ?? (await browserHandle.context.newPage());
+      return { stagehand, browserHandle, page };
+    } catch (err) {
+      try {
+        await browserHandle.close();
+      } catch (closeErr) {
+        this.logger.warn(
+          `Failed to close browser handle after connect error: ${String(closeErr)}`,
         );
       }
       throw err;
@@ -213,6 +228,21 @@ export class BrowserSessionFactory {
       throw new Error('STEEL_API_KEY is required to create browser sessions');
     }
     return key;
+  }
+
+  /** Stagehand ids are `<provider>/<model>`; Gemini is `google/` in Stagehand. */
+  private stagehandModelConfig(externalModel: ExternalModelConfig | null) {
+    if (externalModel) {
+      const prefix = externalModel.provider === 'gemini' ? 'google' : 'openai';
+      return {
+        modelName: `${prefix}/${externalModel.model}` as never,
+        apiKey: externalModel.apiKey,
+      };
+    }
+    return {
+      modelName: this.stagehandModel() as never,
+      apiKey: this.openAiApiKey(),
+    };
   }
 
   private openAiApiKey(): string {

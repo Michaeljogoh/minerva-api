@@ -1,4 +1,7 @@
-import { isNonRetryableToolError } from '../recovery/error-recovery';
+import {
+  isBrowserConnectionLostError,
+  isNonRetryableToolError,
+} from '../recovery/error-recovery';
 import { withRetry, type ToolResult } from './tool-helpers';
 
 export type BrowserToolRunnerCtx = {
@@ -9,6 +12,7 @@ export type BrowserToolRunnerCtx = {
     clientId: string,
     opts?: { force?: boolean },
   ) => Promise<void>;
+  reconnect: (clientId: string) => Promise<void>;
   toolFail: (clientId: string, observation: string, error: unknown) => ToolResult;
 };
 
@@ -27,10 +31,12 @@ export async function runBrowserTool<T extends ToolResult>(
   const clientId = ctx.requireClientId();
   try {
     ctx.assertCanPerformAction(clientId);
-    if (opts.requireAllowlistedPage !== false) {
-      await ctx.assertPageAllowed();
-    }
-    const result = await opts.action();
+    const result = await withBrowserReconnect(ctx, clientId, async () => {
+      if (opts.requireAllowlistedPage !== false) {
+        await ctx.assertPageAllowed();
+      }
+      return opts.action();
+    });
     if (opts.captureOnSuccess !== false) {
       await ctx.captureAfterAction(clientId);
     }
@@ -38,6 +44,23 @@ export async function runBrowserTool<T extends ToolResult>(
   } catch (error) {
     await ctx.captureAfterAction(clientId, { force: true });
     return ctx.toolFail(clientId, opts.failObservation, error);
+  }
+}
+
+/** Steel can drop an idle CDP socket (e.g. during a long approval wait); rebuild it once and rerun. */
+async function withBrowserReconnect<T>(
+  ctx: BrowserToolRunnerCtx,
+  clientId: string,
+  step: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await step();
+  } catch (error) {
+    if (!isBrowserConnectionLostError(error)) {
+      throw error;
+    }
+    await ctx.reconnect(clientId);
+    return step();
   }
 }
 
