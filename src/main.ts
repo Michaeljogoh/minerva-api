@@ -8,7 +8,7 @@ async function bootstrap() {
   const config = app.get(ConfigService);
 
   const frontendUrl =
-    config.get<string>('frontendUrl') ?? 'http://localhost:3000';
+  config.get<string>('frontendUrl') ?? 'http://localhost:3000';
   app.enableCors({
     origin: frontendUrl,
     credentials: true,
