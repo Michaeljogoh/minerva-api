@@ -1,6 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { AsyncLocalStorage } from 'async_hooks';
 import type { TaskType } from '@common/schemas/task-result.schemas';
+import type {
+  ExternalModelConfig,
+  ModelRunConfigSource,
+} from '@modules/model/external-model.types';
 
 interface RunContext {
   clientId: string;
@@ -8,20 +12,22 @@ interface RunContext {
   screenshotOnly: boolean;
   runStartedAt: number;
   humanApprovalGranted: boolean;
+  externalModel: ExternalModelConfig | null;
 }
 
 export interface RunContextInit {
   clientId: string;
   taskType?: TaskType | null;
   screenshotOnly?: boolean;
+  externalModel?: ExternalModelConfig | null;
 }
 
 /**
  * Per-run context for tools. Uses AsyncLocalStorage so concurrent client runs
- * do not overwrite each other's clientId / taskType.
+ * do not overwrite each other's clientId / taskType / user model key.
  */
 @Injectable()
-export class ToolSessionContext {
+export class ToolSessionContext implements ModelRunConfigSource {
   private readonly storage = new AsyncLocalStorage<RunContext>();
 
   /**
@@ -37,6 +43,7 @@ export class ToolSessionContext {
       screenshotOnly: init.screenshotOnly ?? false,
       runStartedAt: Date.now(),
       humanApprovalGranted: false,
+      externalModel: init.externalModel ?? null,
     };
     const storage = this.storage;
     const gen = factory();
@@ -66,6 +73,10 @@ export class ToolSessionContext {
       throw new Error('ToolSessionContext: no active clientId');
     }
     return ctx.clientId;
+  }
+
+  getExternalModel(): ExternalModelConfig | null {
+    return this.storage.getStore()?.externalModel ?? null;
   }
 
   getTaskType(): TaskType | null {

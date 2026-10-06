@@ -100,6 +100,7 @@ export class StagehandToolsService {
         this.rateLimit.assertCanPerformAction(clientId),
       captureAfterAction: (clientId, opts) =>
         this.captureAfterAction(clientId, opts),
+      reconnect: (clientId) => this.browsers.reconnect(clientId),
       toolFail: (clientId, observation, error) =>
         this.toolFail(clientId, observation, error),
     };

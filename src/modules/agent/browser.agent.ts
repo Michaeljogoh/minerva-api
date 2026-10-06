@@ -5,6 +5,7 @@ import {
   BROWSER_AGENT_NAME,
   TASK_SCHEMA_HINTS,
 } from '@common/constants/agent.constants';
+import type { ExternalModelConfig } from '@modules/model/external-model.types';
 import { runWithLlmRetry } from './recovery/error-recovery';
 import { PlannerAgent } from './planner/planner.agent';
 import { TaskControlService } from './task/task-control.service';
@@ -21,6 +22,8 @@ export interface RunGoalParams {
   screenshotOnly?: boolean;
   /** Optional upfront plan. Default false. */
   usePlanner?: boolean;
+  /** User-supplied model + key for this run; server model when absent. */
+  externalModel?: ExternalModelConfig | null;
   abortSignal?: AbortSignal;
   /** Called before LLM retry backoff sleeps (§13.3 / §13.4). */
   onLlmRetry?: (
@@ -55,6 +58,7 @@ export class BrowserAgent {
       taskType,
       screenshotOnly = false,
       usePlanner = false,
+      externalModel = null,
       abortSignal,
       onLlmRetry,
     } = params;
@@ -64,7 +68,7 @@ export class BrowserAgent {
     }
 
     yield* this.toolCtx.bindGenerator(
-      { clientId, taskType, screenshotOnly },
+      { clientId, taskType, screenshotOnly, externalModel },
       () =>
         this.runGoalInner({
           clientId,

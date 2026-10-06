@@ -21,6 +21,17 @@ export default () => {
       ),
   },
 
+  /** Bring-your-own-key: users run jobs on their own OpenAI or Gemini key. */
+  byok: {
+    enabled: parseBoolean(process.env.BYOK_ENABLED, false),
+    openaiModels: parseCsv(process.env.BYOK_OPENAI_MODELS, []),
+    geminiModels: parseCsv(process.env.BYOK_GEMINI_MODELS, []),
+    geminiBaseUrl:
+      process.env.GEMINI_OPENAI_BASE_URL?.trim() ||
+      'https://generativelanguage.googleapis.com/v1beta/openai/',
+    verifyTimeoutMs: parsePositiveInt(process.env.BYOK_VERIFY_TIMEOUT_MS, 10_000),
+  },
+
   steel: {
     apiKey: process.env.STEEL_API_KEY ?? '',
   },
@@ -28,6 +39,8 @@ export default () => {
   pinecone: {
     apiKey: process.env.PINECONE_API_KEY ?? '',
     index: process.env.PINECONE_INDEX ?? '',
+    /** Must equal the Pinecone index dimension; embeddings are requested at this size. */
+    dimension: parsePositiveInt(process.env.PINECONE_DIMENSION, 1536),
   },
 
   database: {
@@ -62,6 +75,10 @@ export default () => {
     maxActionsPerSession: parsePositiveInt(
       process.env.MAX_ACTIONS_PER_SESSION,
       100,
+    ),
+    maxKeyChecksPerMinute: parsePositiveInt(
+      process.env.MAX_KEY_CHECKS_PER_MINUTE,
+      10,
     ),
     gatewayApiKey: process.env.GATEWAY_API_KEY ?? '',
     trustProxy: parseBoolean(process.env.TRUST_PROXY, false),

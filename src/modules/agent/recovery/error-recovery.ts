@@ -54,8 +54,21 @@ export function isBrowserCrashError(error: unknown): boolean {
   );
 }
 
+/** Our link to the Steel browser dropped; the browser itself may still be alive. */
+export function isBrowserConnectionLostError(error: unknown): boolean {
+  const text = errText(error).toLowerCase();
+  return (
+    text.includes('rpc client is closed') ||
+    text.includes('rpc client closed') ||
+    text.includes('stagehand closed') ||
+    text.includes('cdp connection closed') ||
+    text.includes('cdp client is closed') ||
+    text.includes('cdp connection is not open')
+  );
+}
+
 export function isNonRetryableToolError(error: unknown): boolean {
-  if (isBadUrlError(error)) {
+  if (isBadUrlError(error) || isBrowserConnectionLostError(error)) {
     return true;
   }
   const text = errText(error).toLowerCase();

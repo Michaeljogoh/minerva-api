@@ -27,6 +27,14 @@ import { SessionService } from '@modules/persistence/session.service';
 import { RateLimitService } from '@modules/security/rate-limit.service';
 import { GatewayAuthService } from '@modules/security/gateway-auth.service';
 import { LIVE_VIEW_CLIENT_REFRESH_MIN_MS } from '@common/constants/session-lifecycle.constants';
+import {
+  ExternalModelService,
+  redactSecrets,
+} from '@modules/model/external-model.service';
+import {
+  externalModelInputSchema,
+  type ExternalModelConfig,
+} from '@modules/model/external-model.types';
 import type { ProtocolOutbound } from './adk-event.mapper';
 import { GatewayEventBridge } from './gateway-event.bridge';
 import { TaskRunCoordinator } from './task-run.coordinator';
@@ -35,6 +43,7 @@ const startTaskSchema = z.object({
   goal: z.string().min(1),
   taskType: taskTypeSchema.optional(),
   usePlanner: z.boolean().optional(),
+  model: externalModelInputSchema.optional(),
 });
 
 const approveActionSchema = z.object({
@@ -72,6 +81,7 @@ export class AgentGateway
     private readonly taskRuns: TaskRunCoordinator,
     private readonly eventBridge: GatewayEventBridge,
     private readonly sessions: SessionService,
+    private readonly externalModels: ExternalModelService,
   ) {}
 
   afterInit(): void {
@@ -149,11 +159,32 @@ export class AgentGateway
         }
       };
 
+      // Re-check the user key before spending a cloud browser on it; it may
+      // have been revoked since the client verified it.
+      let externalModel: ExternalModelConfig | null = null;
+      if (parsed.data.model) {
+        const checked = await this.externalModels.check(parsed.data.model);
+        if (!checked.ok) {
+          ifRunning(() =>
+            this.emitError(client.id, checked.error, {
+              recoverable: true,
+              fatal: true,
+            }),
+          );
+          return;
+        }
+        externalModel = checked.config;
+      }
+      if (abortSignal.aborted) {
+        return;
+      }
+
       await this.taskRuns.execute({
         clientId: client.id,
         goal: parsed.data.goal,
         taskType: parsed.data.taskType,
         usePlanner: parsed.data.usePlanner,
+        externalModel,
         abortSignal,
         lastReasoning: this.lastReasoning.get(client.id) ?? { value: '' },
         callbacks: {
@@ -196,6 +227,33 @@ export class AgentGateway
       await this.taskRuns.releaseBrowserIfIdle(client.id);
       this.lastReasoning.delete(client.id);
     }
+  }
+
+  /** Ack-style: the client awaits `{ ok, error? }`. The key is never echoed or stored. */
+  @SubscribeMessage('verify_model_key')
+  async onVerifyModelKey(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() body: unknown,
+  ): Promise<{ ok: boolean; error?: string }> {
+    const parsed = externalModelInputSchema.safeParse(body);
+    if (!parsed.success) {
+      return {
+        ok: false,
+        error: 'Choose a provider and model, then paste your key.',
+      };
+    }
+    try {
+      this.rateLimit.assertCanCheckModelKey(
+        this.clientIps.get(client.id) ?? this.clientIp(client),
+      );
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+    const checked = await this.externalModels.check(parsed.data);
+    return checked.ok ? { ok: true } : { ok: false, error: checked.error };
   }
 
   @SubscribeMessage('approve_action')
@@ -325,7 +383,7 @@ export class AgentGateway
   ): void {
     const payload = {
       timestamp: Date.now(),
-      error,
+      error: redactSecrets(error),
       recoverable: opts?.recoverable,
       fatal: opts?.fatal,
     };

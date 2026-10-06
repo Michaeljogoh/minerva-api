@@ -12,6 +12,7 @@ import { STEP_WATCH_INTERVAL_MS } from '@common/constants/session-lifecycle.cons
 import { TaskControlService } from '@modules/agent/task/task-control.service';
 import { BrowserSessionManager } from '@modules/browser/browser-session.manager';
 import type { TaskType } from '@common/schemas/task-result.schemas';
+import type { ExternalModelConfig } from '@modules/model/external-model.types';
 import {
   mapAdkEventToProtocol,
   type ProtocolOutbound,
@@ -33,6 +34,7 @@ export interface TaskRunParams {
   goal: string;
   taskType?: TaskType;
   usePlanner?: boolean;
+  externalModel?: ExternalModelConfig | null;
   abortSignal: AbortSignal;
   callbacks: TaskRunCallbacks;
   lastReasoning: { value: string };
@@ -54,6 +56,7 @@ export class TaskRunCoordinator {
       goal,
       taskType,
       usePlanner,
+      externalModel = null,
       abortSignal,
       callbacks,
       lastReasoning,
@@ -89,6 +92,7 @@ export class TaskRunCoordinator {
       const { sessionId, liveUrl } = await this.browsers.createBrowserSession(
         clientId,
         goal,
+        externalModel,
       );
       if (abortSignal.aborted) {
         return;
@@ -103,6 +107,7 @@ export class TaskRunCoordinator {
         taskType,
         screenshotOnly,
         usePlanner,
+        externalModel,
         abortSignal,
         onLlmRetry: async (attempt, error, delayMs) => {
           const rateLimited = isLlmRateLimitError(error);
