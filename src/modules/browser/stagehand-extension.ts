@@ -69,13 +69,20 @@ export async function resolveSteelStagehandExtensionId(
     return cachedSteelExtensionId;
   }
 
+  // The extension name is the same across versions, so an earlier upload would
+  // be reused forever and can speak an older protocol than the installed SDK
+  // ("Protocol major mismatch"). Replace any stale copy once per process with
+  // the extension bundled in the installed SDK so both always match.
   const listed = await steel.extensions.list();
-  const existing = listed.extensions.find((ext) =>
-    STAGEHAND_EXTENSION_NAME_RE.test(ext.name),
-  );
-  if (existing?.id) {
-    cachedSteelExtensionId = existing.id;
-    return existing.id;
+  for (const ext of listed.extensions) {
+    if (!ext.id || !STAGEHAND_EXTENSION_NAME_RE.test(ext.name)) {
+      continue;
+    }
+    try {
+      await steel.extensions.delete(ext.id);
+    } catch {
+      // Best effort — a stale copy we cannot delete is superseded by the new upload.
+    }
   }
 
   const zipPath = ensureStagehandExtensionZip();

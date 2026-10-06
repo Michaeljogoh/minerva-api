@@ -167,7 +167,7 @@ export class BrowserSessionFactory {
       const stagehand = await Stagehand.create({
         browser: browserHandle,
         model: this.stagehandModelConfig(target.externalModel),
-        cache: false,
+        cache: true,
         domSettleTimeoutMs: STAGEHAND_DOM_SETTLE_MS,
         logging: { level: 'warn', format: 'json' },
       });

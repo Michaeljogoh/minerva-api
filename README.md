@@ -1,18 +1,20 @@
-# Browser Agents API
+# Minerva API
 
-Browser Agents API is a NestJS backend that runs a browser automation agent for accounting workflows. A client sends a natural-language goal over Socket.IO; the server spins up a Steel cloud browser session, drives it with Stagehand, and reasons with OpenAI (custom tool-calling orchestrator). Results are Zod-validated structured outputs. Sensitive actions require human approval.
+Minerva API is the NestJS backend for Minerva, an AI browser agent for small-business accounting workflows. A client sends a natural-language goal over Socket.IO; the server spins up a Steel cloud browser session, drives it with Stagehand, and reasons with OpenAI (custom tool-calling orchestrator). Results are Zod-validated structured outputs. Sensitive actions require human approval.
 
 ---
 
 ## Overview
 
-One live workspace with three demos:
+One live workspace with three accounting workflows:
 
 | Task | `taskType` | What it does |
 |------|------------|--------------|
 | Multi-site tax impact brief | `tax_code_delta` | Research IRS / state / commerce tax sources → structured client brief |
 | Shopify + Stripe reconciliation | `commerce_reconciliation` | Connect or log in, pull orders/payouts → normalized exception table |
 | Month-end close assistant | `month_end_exception` | Multi-portal close walkthrough → blockers, missing docs, checklist |
+
+The web app also offers short **quick tests** (for example reading a page heading or comparing two sites). They start with no `taskType`, so they run as free-form tasks without a structured result schema.
 
 The agent plans before every tool call, never categorizes or posts without approval, may visit public websites needed for the goal, and runs in Steel-hosted Chromium via CDP (live viewer URL over Socket.IO).
 
@@ -124,7 +126,7 @@ Full payload shapes: [`docs/backend-prd.md`](./docs/backend-prd.md) §12.
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| `GET` | `/health` | — | API + Postgres (Redis only if enabled) |
+| `GET` | `/health` | — | API + Postgres (Redis only if enabled). The landing page also pings it to wake a sleeping host |
 | `GET` | `/sessions` | `x-api-key` if set | List recent replay sessions |
 | `GET` | `/sessions/:id` | same | Full session replay |
 

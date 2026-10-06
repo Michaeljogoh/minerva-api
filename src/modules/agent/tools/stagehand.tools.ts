@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { z } from 'zod';
 import type { Page as StagehandPage, Stagehand } from '@browserbasehq/stagehand';
 import { ApprovalService } from '../approval/approval.service';
@@ -42,12 +42,22 @@ import { ToolSessionContext } from './tool-session.context';
 import type { AgentTool } from '../orchestrator/agent-tool';
 import { RagService } from '@modules/rag/rag.service';
 import { SessionService } from '@modules/persistence/session.service';
+import {
+  capturePageSnapshot,
+  formatPageState,
+  type PageElement,
+} from './page-state';
 
 @Injectable()
 export class StagehandToolsService {
   private readonly lastScreenshotEmitAt = new Map<string, number>();
   private readonly screenshotSlow = new Set<string>();
   private readonly screenshotStep = new Map<string, number>();
+  private readonly logger = new Logger(StagehandToolsService.name);
+  /** Element IDs from the latest page state, per client (ids are only valid until the page changes). */
+  private readonly elementRegistry = new Map<string, Map<string, PageElement['action']>>();
+  /** Clients whose page is known-settled; cleared by anything that can change the page. */
+  private readonly settledClients = new Set<string>();
 
   constructor(
     private readonly browsers: BrowserSessionManager,
@@ -65,6 +75,8 @@ export class StagehandToolsService {
   createTools(): AgentTool[] {
     return [
       this.navigateTool(),
+      this.actOnElementTool(),
+      this.fillFormTool(),
       this.actTool(),
       this.observeTool(),
       this.extractTool(),
@@ -205,6 +217,65 @@ export class StagehandToolsService {
     return fail(observation, error);
   }
 
+  /** Snapshot the page (DOM only, no AI), register element ids, return compact text. */
+  private async refreshPageState(clientId: string): Promise<string> {
+    try {
+      const page = await this.browsers.getStagehandPage(clientId);
+      const snapshot = await capturePageSnapshot(page);
+      this.elementRegistry.set(
+        clientId,
+        new Map(snapshot.elements.map((e) => [e.id, e.action])),
+      );
+      return formatPageState(snapshot);
+    } catch {
+      // Page state is a convenience — never fail the action because of it.
+      this.elementRegistry.delete(clientId);
+      return '';
+    }
+  }
+
+  private markPageChanged(clientId: string): void {
+    this.settledClients.delete(clientId);
+  }
+
+  /** Settle only when the page may have changed since the last settle. */
+  private async settleIfNeeded(
+    clientId: string,
+    page: StagehandPage,
+  ): Promise<void> {
+    if (this.settledClients.has(clientId)) {
+      return;
+    }
+    await settleStagehandPage(page);
+    this.settledClients.add(clientId);
+  }
+
+  private logStep(
+    tool: string,
+    clientId: string,
+    timing: { aiMs?: number; browserMs: number },
+  ): void {
+    this.logger.log(
+      `[perf] tool=${tool} client=${clientId} ai=${timing.aiMs ?? 0}ms browser=${timing.browserMs}ms`,
+    );
+  }
+
+  private async guardSensitive(text: string): Promise<ToolResult | null> {
+    if (!looksSensitiveAction(text)) {
+      return null;
+    }
+    if (!this.toolCtx.hasHumanApproval()) {
+      return {
+        success: false,
+        observation:
+          'Sensitive action blocked — call ask_human and wait for approval before acting.',
+        error: 'Sensitive action blocked',
+      };
+    }
+    this.toolCtx.consumeHumanApproval();
+    return null;
+  }
+
   private navigateTool() {
     const parameters = z.object({
       url: z.string().describe('Full URL to navigate to'),
@@ -221,6 +292,7 @@ export class StagehandToolsService {
           failObservation: `Navigate failed for ${args.url}. Try an alternate public URL or ask_human.`,
           requireAllowlistedPage: false,
           action: async () => {
+            const startedAt = Date.now();
             await runWithToolRetry(async () => {
               const page = await this.page();
               await page.goto(args.url, {
@@ -234,11 +306,194 @@ export class StagehandToolsService {
             const title = await page.title();
             const url = await page.url();
             await this.assertCurrentPageAllowed();
+            const clientId = this.toolCtx.requireClientId();
+            this.settledClients.add(clientId);
+            const state = await this.refreshPageState(clientId);
+            this.logStep('navigate', clientId, { browserMs: Date.now() - startedAt });
             return {
               success: true,
               title,
               url,
-              observation: `Navigated to ${url} (title: ${title}). Reason: ${args.reason}`,
+              observation: `Navigated to ${url} (title: ${title}). Reason: ${args.reason}${state ? `\n${state}` : ''}`,
+            };
+          },
+        });
+      },
+    });
+  }
+
+  private lookupElement(
+    clientId: string,
+    id: string,
+  ): PageElement['action'] | undefined {
+    return this.elementRegistry.get(clientId)?.get(id);
+  }
+
+  private unknownElementResult(id: string): ToolResult {
+    return {
+      success: false,
+      observation: `Unknown element id "${id}" — ids only last until the next page state. Use ids from the latest PAGE STATE, or fall back to act.`,
+      error: 'unknown_element_id',
+    };
+  }
+
+  /** Execute a pre-resolved element with no AI call. */
+  private async runElementAction(
+    action: PageElement['action'],
+    value?: string,
+  ) {
+    const page = await this.page();
+    const sh = await this.stagehand();
+    const resolved =
+      value !== undefined ? { ...action, arguments: [value] } : action;
+    return sh.act(resolved, { page, timeout: STAGEHAND_ACTION_TIMEOUT_MS });
+  }
+
+  private actOnElementTool() {
+    const parameters = z.object({
+      id: z.string().describe('Element id from the latest PAGE STATE, e.g. e3'),
+      value: z
+        .string()
+        .optional()
+        .describe('Text to type (textboxes) or option to choose (selects)'),
+      reason: z.string().describe('Why this action is needed'),
+    });
+
+    return this.defineTool({
+      name: 'act_on_element',
+      description:
+        'Click, type into, or select an element by id from the latest PAGE STATE. Runs instantly with no AI call — always prefer this over act.',
+      parameters,
+      execute: async (args): Promise<ToolResult> => {
+        const clientId = this.toolCtx.requireClientId();
+        const action = this.lookupElement(clientId, args.id);
+        if (!action) {
+          return this.unknownElementResult(args.id);
+        }
+        if (action.method === 'fill' && args.value === undefined) {
+          return {
+            success: false,
+            observation: `Element ${args.id} is a text field — pass "value" to type into it.`,
+            error: 'missing_value',
+          };
+        }
+        const blocked = await this.guardSensitive(action.description);
+        if (blocked) {
+          return blocked;
+        }
+
+        return runBrowserTool(this.runnerCtx(), {
+          failObservation: `act_on_element failed for ${args.id}. Take a screenshot, or fall back to act.`,
+          action: async () => {
+            const startedAt = Date.now();
+            const result = await runWithToolRetry(() =>
+              this.runElementAction(action, args.value),
+            );
+            await this.assertCurrentPageAllowed();
+            this.markPageChanged(clientId);
+            const stepMs = Date.now() - startedAt;
+            const state = await this.refreshPageState(clientId);
+            this.logStep('act_on_element', clientId, { browserMs: stepMs });
+            return {
+              success: result.data.success,
+              observation: result.data.success
+                ? `Done: ${action.description}. Reason: ${args.reason}${state ? `\n${state}` : ''}`
+                : `Failed: ${result.data.message}. Take a screenshot, or fall back to act.${state ? `\n${state}` : ''}`,
+              error: result.data.success ? undefined : result.data.message,
+            };
+          },
+        });
+      },
+    });
+  }
+
+  private fillFormTool() {
+    const parameters = z.object({
+      fields: z
+        .array(
+          z.object({
+            id: z.string().describe('Element id of the field'),
+            value: z.string().describe('Text to type or option to select'),
+          }),
+        )
+        .min(1),
+      submitId: z
+        .string()
+        .optional()
+        .describe('Element id of the submit button to click after filling'),
+      reason: z.string().describe('Why this form is being filled'),
+    });
+
+    return this.defineTool({
+      name: 'fill_form',
+      description:
+        'Fill several fields (and optionally click submit) in one step using element ids from the latest PAGE STATE. No AI calls.',
+      parameters,
+      execute: async (args): Promise<ToolResult> => {
+        const clientId = this.toolCtx.requireClientId();
+        const resolved: Array<{ action: PageElement['action']; value: string }> = [];
+        for (const field of args.fields) {
+          const action = this.lookupElement(clientId, field.id);
+          if (!action) {
+            return this.unknownElementResult(field.id);
+          }
+          resolved.push({ action, value: field.value });
+        }
+        let submit: PageElement['action'] | undefined;
+        if (args.submitId) {
+          submit = this.lookupElement(clientId, args.submitId);
+          if (!submit) {
+            return this.unknownElementResult(args.submitId);
+          }
+          const blocked = await this.guardSensitive(submit.description);
+          if (blocked) {
+            return blocked;
+          }
+        }
+
+        return runBrowserTool(this.runnerCtx(), {
+          failObservation:
+            'fill_form failed. Take a screenshot, or fall back to act.',
+          action: async () => {
+            const startedAt = Date.now();
+            const filled: string[] = [];
+            for (const { action, value } of resolved) {
+              const result = await runWithToolRetry(() =>
+                this.runElementAction(action, value),
+              );
+              if (!result.data.success) {
+                this.markPageChanged(clientId);
+                const state = await this.refreshPageState(clientId);
+                return {
+                  success: false,
+                  observation: `fill_form stopped at ${action.description}: ${result.data.message}.${state ? `\n${state}` : ''}`,
+                  error: result.data.message,
+                };
+              }
+              filled.push(action.description);
+            }
+            if (submit) {
+              const result = await runWithToolRetry(() =>
+                this.runElementAction(submit),
+              );
+              if (!result.data.success) {
+                this.markPageChanged(clientId);
+                const state = await this.refreshPageState(clientId);
+                return {
+                  success: false,
+                  observation: `Filled ${filled.length} field(s) but submit failed: ${result.data.message}.${state ? `\n${state}` : ''}`,
+                  error: result.data.message,
+                };
+              }
+            }
+            await this.assertCurrentPageAllowed();
+            this.markPageChanged(clientId);
+            const stepMs = Date.now() - startedAt;
+            const state = await this.refreshPageState(clientId);
+            this.logStep('fill_form', clientId, { browserMs: stepMs });
+            return {
+              success: true,
+              observation: `Filled ${filled.length} field(s)${submit ? ` and submitted (${submit.description})` : ''}. Reason: ${args.reason}${state ? `\n${state}` : ''}`,
             };
           },
         });
@@ -259,26 +514,21 @@ export class StagehandToolsService {
     return this.defineTool({
       name: 'act',
       description:
-        'Perform a browser interaction via natural language (clicks, typing, scrolling, selections).',
+        'FALLBACK only: natural-language browser action (uses a second AI call). Prefer act_on_element / fill_form with element IDs from the latest page state; use this for scrolling or when no matching element ID exists.',
       parameters,
       execute: async (args): Promise<ToolResult> => {
         // Rate limit is enforced once inside runBrowserTool (not here).
-        if (looksSensitiveAction(args.instruction)) {
-          if (!this.toolCtx.hasHumanApproval()) {
-            return {
-              success: false,
-              observation:
-                'Sensitive action blocked — call ask_human and wait for approval before act.',
-              error: 'Sensitive action blocked',
-            };
-          }
-          this.toolCtx.consumeHumanApproval();
+        const blocked = await this.guardSensitive(args.instruction);
+        if (blocked) {
+          return blocked;
         }
 
         return runBrowserTool(this.runnerCtx(), {
-          failObservation: `Act failed for "${args.instruction}". Try observe to inspect the page, screenshot, or ask_human.`,
+          failObservation: `Act failed for "${args.instruction}". Take a screenshot to see the page, or ask_human.`,
           action: async () => {
             const page = await this.page();
+            const clientId = this.toolCtx.requireClientId();
+            const startedAt = Date.now();
             const result = await runWithToolRetry(async () => {
               // Stagehand act already waits for DOM/network quiet — skip our
               // extra settle so clicks feel snappy.
@@ -289,12 +539,19 @@ export class StagehandToolsService {
               });
             });
             await this.assertCurrentPageAllowed();
+            this.markPageChanged(clientId);
+            const aiMs = Date.now() - startedAt;
+            const state = await this.refreshPageState(clientId);
+            this.logStep('act', clientId, {
+              aiMs,
+              browserMs: Date.now() - startedAt - aiMs,
+            });
             const actionDesc = result.data.actionDescription || args.instruction;
             return {
               success: result.data.success,
               observation: result.data.success
-                ? `Act succeeded: ${actionDesc}. Reason: ${args.reason}`
-                : `Act failed: ${result.data.message}. Try observe, screenshot, or ask_human.`,
+                ? `Act succeeded: ${actionDesc}. Reason: ${args.reason}${state ? `\n${state}` : ''}`
+                : `Act failed: ${result.data.message}. Take a screenshot or ask_human.${state ? `\n${state}` : ''}`,
               error: result.data.success ? undefined : result.data.message,
             };
           },
@@ -317,7 +574,7 @@ export class StagehandToolsService {
     return this.defineTool({
       name: 'observe',
       description:
-        'Discover actionable elements on the page before act (buttons, links, inputs, etc.).',
+        'Semantic element search (AI call). Elements are returned with ids usable in act_on_element. Normally unnecessary — the latest page state already lists elements.',
       parameters,
       execute: async (args): Promise<ToolResult> =>
         runBrowserTool(this.runnerCtx(), {
@@ -330,18 +587,28 @@ export class StagehandToolsService {
               args.instruction?.trim() ||
               'List all interactive elements visible on the page';
             const result = await runWithToolRetry(async () => {
-              await settleStagehandPage(page);
+              await this.settleIfNeeded(this.toolCtx.requireClientId(), page);
               const sh = await this.stagehand();
               return sh.observe(instruction, {
                 page,
                 timeout: STAGEHAND_ACTION_TIMEOUT_MS,
               });
             });
-            const elements = result.data.map((el) => ({
-              description: el.description,
-              selector: el.selector,
-              method: el.method,
-            }));
+            const clientId = this.toolCtx.requireClientId();
+            const registry =
+              this.elementRegistry.get(clientId) ??
+              new Map<string, PageElement['action']>();
+            this.elementRegistry.set(clientId, registry);
+            const elements = result.data.map((el, i) => {
+              const id = `o${i + 1}`;
+              registry.set(id, {
+                selector: el.selector,
+                description: el.description,
+                method: el.method ?? 'click',
+                arguments: el.arguments,
+              });
+              return { id, description: el.description, method: el.method };
+            });
             return {
               success: true,
               elements,
@@ -382,7 +649,7 @@ export class StagehandToolsService {
             });
             const page = await this.page();
             const result = await runWithToolRetry(async () => {
-              await settleStagehandPage(page);
+              await this.settleIfNeeded(this.toolCtx.requireClientId(), page);
               const sh = await this.stagehand();
               return sh.extract(args.instruction, schema as never, {
                 page,
