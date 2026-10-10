@@ -31,6 +31,7 @@ export interface TaskRunCallbacks {
 
 export interface TaskRunParams {
   clientId: string;
+  userId: string;
   goal: string;
   taskType?: TaskType;
   usePlanner?: boolean;
@@ -53,6 +54,7 @@ export class TaskRunCoordinator {
   async execute(params: TaskRunParams): Promise<void> {
     const {
       clientId,
+      userId,
       goal,
       taskType,
       usePlanner,
@@ -89,20 +91,32 @@ export class TaskRunCoordinator {
     }, STEP_WATCH_INTERVAL_MS);
 
     try {
+      let browserReadySent = false;
       const { sessionId, liveUrl } = await this.browsers.createBrowserSession(
         clientId,
+        userId,
         goal,
         externalModel,
+        (info) => {
+          if (abortSignal.aborted || browserReadySent) {
+            return;
+          }
+          browserReadySent = true;
+          callbacks.onBrowserReady(info);
+        },
       );
       if (abortSignal.aborted) {
         return;
       }
 
       const screenshotOnly = !liveUrl;
-      callbacks.onBrowserReady({ liveUrl, sessionId });
+      if (!browserReadySent) {
+        callbacks.onBrowserReady({ liveUrl, sessionId });
+      }
 
       for await (const event of this.agent.runGoal({
         clientId,
+        userId,
         goal,
         taskType,
         screenshotOnly,

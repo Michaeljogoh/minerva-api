@@ -5,6 +5,7 @@ import { Repository } from 'typeorm';
 import { randomUUID } from 'crypto';
 import Steel from 'steel-sdk';
 import type { StagehandBrowser } from '@browserbasehq/stagehand';
+import { UserBrowserProfileService } from './user-browser-profile.service';
 import { SessionRecordEntity } from '@modules/persistence/entities/session-record.entity';
 import { STAGEHAND_DOM_SETTLE_MS } from '@common/constants/session-lifecycle.constants';
 import type { ExternalModelConfig } from '@modules/model/external-model.types';
@@ -47,18 +48,31 @@ export class BrowserSessionFactory {
     private readonly config: ConfigService,
     @InjectRepository(SessionRecordEntity)
     private readonly sessionsRepo: Repository<SessionRecordEntity>,
+    private readonly profiles: UserBrowserProfileService,
   ) {}
 
   async create(
     clientId: string,
+    userId: string,
     goal: string,
     externalModel: ExternalModelConfig | null = null,
+    onSessionCreated?: (info: { liveUrl: string; sessionId: string }) => void,
   ): Promise<CreatedBrowserSession> {
     const steelApiKey = this.steelApiKey();
     const createdAt = new Date();
+    const startedMs = Date.now();
+    let lapMs = startedMs;
+    const lap = (phase: string) => {
+      const now = Date.now();
+      this.logger.log(
+        `[timing] ${clientId} ${phase}: ${now - lapMs}ms (total ${now - startedMs}ms)`,
+      );
+      lapMs = now;
+    };
 
     const record = this.sessionsRepo.create({
       id: randomUUID(),
+      userId,
       goal: goal || '(pending)',
       taskType: null,
       status: 'running',
@@ -73,6 +87,7 @@ export class BrowserSessionFactory {
 
     let browserSessionId = '';
     let liveUrl = '';
+    let leasedProfile = false;
 
     try {
       const steel = this.getClient();
@@ -81,16 +96,34 @@ export class BrowserSessionFactory {
       // and attach via extensionIds, then connect with the Chrome extension id.
       ensureStagehandExtensionZip();
       const steelExtensionId = await resolveSteelStagehandExtensionId(steel);
+      lap('extension resolve');
+      // Reuse the user's saved sign-ins and keep saving new ones.
+      const lease = await this.profiles.acquire(userId);
+      leasedProfile = lease.persist;
+      lap('profile lease');
       const session = await steel.sessions.create({
         extensionIds: [steelExtensionId],
+        persistProfile: lease.persist,
+        ...(lease.profileId ? { profileId: lease.profileId } : {}),
         // Headful WebRTC at 1080p for a sharper live stream in the embed.
         headless: false,
         dimensions: { width: 1920, height: 1080 },
         deviceConfig: { device: 'desktop' },
       });
+      lap('steel sessions.create');
       browserSessionId = session.id ?? '';
       if (!browserSessionId) {
         throw new Error('Steel session create did not return an id');
+      }
+      const profileId = lease.persist
+        ? (session.profileId ?? lease.profileId)
+        : undefined;
+      if (profileId) {
+        await this.profiles.register(userId, profileId);
+      } else if (lease.persist) {
+        // Steel returned no profile to save to; do not hold the lease.
+        this.profiles.abort(userId);
+        leasedProfile = false;
       }
 
       // Prefer Steel's embeddable debug/player URL (WebRTC live stream).
@@ -99,6 +132,17 @@ export class BrowserSessionFactory {
         (session as { debugUrl?: string }).debugUrl?.trim() || '';
       const viewerUrl = session.sessionViewerUrl?.trim() || '';
       liveUrl = debugUrl || viewerUrl;
+
+      // The live view is usable now; don't make the user wait for Stagehand.
+      if (liveUrl) {
+        try {
+          onSessionCreated?.({ liveUrl, sessionId: browserSessionId });
+        } catch (cbErr) {
+          this.logger.warn(
+            `onSessionCreated callback failed: ${formatUnknownError(cbErr)}`,
+          );
+        }
+      }
 
       const wsBase = session.websocketUrl ?? '';
       if (!wsBase) {
@@ -111,12 +155,14 @@ export class BrowserSessionFactory {
       const chromeExtensionId =
         chromeExtensionIdFromSteelId(steelExtensionId) ??
         (await discoverStagehandChromeExtensionId(cdpUrl));
+      lap('extension id');
       const connectTarget: StagehandConnectTarget = {
         cdpUrl,
         extensionId: chromeExtensionId,
         externalModel,
       };
       const connection = await this.connect(connectTarget);
+      lap('stagehand connect');
 
       const live: BrowserSession = {
         ...connection,
@@ -125,6 +171,8 @@ export class BrowserSessionFactory {
         liveUrl,
         createdAt,
         recordId: record.id,
+        userId,
+        profileId,
       };
 
       this.logger.log(
@@ -143,6 +191,9 @@ export class BrowserSessionFactory {
       );
       if (browserSessionId) {
         await this.releaseSteelSession(browserSessionId);
+      }
+      if (leasedProfile) {
+        this.profiles.abort(userId);
       }
       try {
         await this.sessionsRepo.delete(record.id);

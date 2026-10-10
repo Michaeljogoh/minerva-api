@@ -3,8 +3,16 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { SessionRecordEntity } from './entities/session-record.entity';
+import { UserAppConnectionEntity } from './entities/user-app-connection.entity';
+import { UserBrowserProfileEntity } from './entities/user-browser-profile.entity';
 import { SessionController } from './session.controller';
 import { SessionService } from './session.service';
+
+const ENTITIES = [
+  SessionRecordEntity,
+  UserAppConnectionEntity,
+  UserBrowserProfileEntity,
+];
 
 @Module({
   imports: [
@@ -25,7 +33,7 @@ import { SessionService } from './session.service';
           return {
             type: 'postgres' as const,
             url,
-            entities: [SessionRecordEntity],
+            entities: ENTITIES,
             migrations,
             migrationsRun,
             synchronize,
@@ -40,7 +48,7 @@ import { SessionService } from './session.service';
           username: config.get<string>('database.username'),
           password: config.get<string>('database.password'),
           database: config.get<string>('database.name'),
-          entities: [SessionRecordEntity],
+          entities: ENTITIES,
           migrations,
           migrationsRun,
           synchronize,
@@ -48,7 +56,7 @@ import { SessionService } from './session.service';
         };
       },
     }),
-    TypeOrmModule.forFeature([SessionRecordEntity]),
+    TypeOrmModule.forFeature(ENTITIES),
   ],
   controllers: [SessionController],
   providers: [SessionService],

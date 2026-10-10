@@ -6,13 +6,11 @@ export default () => {
 
   openai: {
     apiKey: process.env.OPENAI_API_KEY ?? '',
-    /** Single model for agent, planner, and Stagehand (unless overridden). */
     model: process.env.OPENAI_MODEL ?? 'gpt-5.6-luna',
     plannerModel:
       process.env.OPENAI_PLANNER_MODEL?.trim() ||
       process.env.OPENAI_MODEL?.trim() ||
       'gpt-5.6-luna',
-    /** Optional override; provider picks model-appropriate default when unset. */
     reasoningEffort: process.env.OPENAI_REASONING_EFFORT?.trim() ?? '',
     stagehandModel:
       process.env.OPENAI_STAGEHAND_MODEL?.trim() ||
@@ -39,7 +37,6 @@ export default () => {
   pinecone: {
     apiKey: process.env.PINECONE_API_KEY ?? '',
     index: process.env.PINECONE_INDEX ?? '',
-    /** Must equal the Pinecone index dimension; embeddings are requested at this size. */
     dimension: parsePositiveInt(process.env.PINECONE_DIMENSION, 1536),
   },
 
@@ -84,9 +81,22 @@ export default () => {
     trustProxy: parseBoolean(process.env.TRUST_PROXY, false),
   },
 
+  /** User accounts (Clerk). Tokens are verified against the issuer's JWKS. */
+  auth: {
+    issuer: process.env.AUTH_ISSUER?.trim() ?? '',
+    jwksUrl: process.env.AUTH_JWKS_URL?.trim() ?? '',
+    audience: process.env.AUTH_AUDIENCE?.trim() ?? '',
+  },
+
   composio: {
     apiKey: process.env.COMPOSIO_API_KEY ?? '',
-    userId: process.env.COMPOSIO_USER_ID ?? 'minerva-demo',
+    userIdPrefix: process.env.COMPOSIO_USER_ID_PREFIX?.trim() || 'minerva:',
+    /** Shopify has no Composio-managed OAuth app; this is your own auth config. */
+    shopifyAuthConfigId: process.env.COMPOSIO_SHOPIFY_AUTH_CONFIG_ID?.trim() ?? '',
+    /** Where the OAuth popup lands after the user approves. */
+    callbackUrl:
+      process.env.COMPOSIO_CALLBACK_URL?.trim() ||
+      `${process.env.FRONTEND_URL ?? 'http://localhost:3000'}/app/connected`,
   },
   };
 };

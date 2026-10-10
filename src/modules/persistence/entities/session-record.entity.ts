@@ -24,6 +24,12 @@ export class SessionRecordEntity {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
 
+  /** Owner (verified account id). Every read is scoped by this. */
+  @Index()
+  // Default '' keeps pre-accounts rows valid; they match no user, so stay hidden.
+  @Column({ type: 'varchar', length: 128, default: '' })
+  userId!: string;
+
   @Column({ type: 'text' })
   goal!: string;
 

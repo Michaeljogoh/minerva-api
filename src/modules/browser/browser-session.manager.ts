@@ -1,3 +1,4 @@
+import { UserBrowserProfileService } from './user-browser-profile.service';
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import type {
   Page as StagehandPage,
@@ -23,19 +24,28 @@ export class BrowserSessionManager implements OnModuleDestroy {
     private readonly screenshotStore: ScreenshotStore,
     private readonly registry: BrowserSessionRegistry,
     private readonly factory: BrowserSessionFactory,
+    private readonly profiles: UserBrowserProfileService,
   ) {}
 
   async createBrowserSession(
     clientId: string,
+    userId: string,
     goal = '',
     externalModel: ExternalModelConfig | null = null,
+    onSessionCreated?: (info: { liveUrl: string; sessionId: string }) => void,
   ): Promise<{ sessionId: string; liveUrl: string }> {
     if (this.registry.has(clientId)) {
       await this.closeBrowserSession(clientId);
     }
     this.registry.cancelDeferredClose(clientId);
 
-    const created = await this.factory.create(clientId, goal, externalModel);
+    const created = await this.factory.create(
+      clientId,
+      userId,
+      goal,
+      externalModel,
+      onSessionCreated,
+    );
     this.registry.set(clientId, created.live);
 
     this.sessionStore.set(clientId, {
@@ -130,6 +140,10 @@ export class BrowserSessionManager implements OnModuleDestroy {
     );
 
     await this.factory.releaseSteelSession(live.sessionId);
+    if (live.userId && live.profileId) {
+      // Steel uploads the profile after release; free it once it is READY.
+      void this.profiles.finishUpload(live.userId, live.profileId);
+    }
 
     this.sessionStore.delete(clientId);
     this.screenshotStore.clearClient(clientId);
