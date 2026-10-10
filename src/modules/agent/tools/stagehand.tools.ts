@@ -10,9 +10,11 @@ import {
 } from '@common/constants/session-lifecycle.constants';
 import { BrowserSessionManager } from '@modules/browser/browser-session.manager';
 import { ComposioService } from '@modules/composio/composio.service';
+import { parseShopifyHandle } from '@modules/composio/shopify-domain';
 import { ScreenshotStore } from '@modules/browser/screenshot.store';
 import {
   parseExtractedData,
+  taskOutcomeSchema,
   taskTypeSchema,
   type TaskResult,
   type TaskType,
@@ -866,66 +868,144 @@ export class StagehandToolsService {
     const parameters = z.object({
       app: z
         .string()
-        .describe('App to connect: shopify, stripe, gmail, googledrive, slack'),
+        .describe(
+          'App to connect: shopify, stripe, quickbooks, gmail, googledrive, slack',
+        ),
       reason: z.string().describe('Why this app connection is needed'),
     });
 
     return this.defineTool({
       name: 'request_app_connection',
       description:
-        'Ask the user to securely connect an app via Composio (OAuth) or fall back to live-browser login.',
+        'Ask the user to securely connect an app (OAuth through Composio). Shopify is connected this way only; other apps may fall back to live-browser login.',
       parameters,
       execute: async (args): Promise<ToolResult> => {
         try {
           const clientId = this.toolCtx.requireClientId();
-          const access = await this.composio.requestAccess(args.app);
+          const userId = this.toolCtx.requireUserId();
+          const toolkit = this.composio.normalizeToolkit(args.app);
           const session = this.browsers.getBrowserSession(clientId);
+          const sessionId = session?.sessionId ?? clientId;
 
-          if (access.mode === 'composio') {
-            const result = await this.approvals.requestApproval({
-              clientId,
-              sessionId: session?.sessionId ?? clientId,
-              kind: 'connect',
-              appName: access.toolkit,
-              connectUrl: access.connectUrl,
-              question: `Connect ${access.toolkit} securely to continue.`,
-              context: `${args.reason} Open the secure Composio link, finish OAuth, then confirm. Tokens stay with Composio — never paste secrets here.`,
-            });
+          // Connections persist across runs — do not ask the user twice.
+          if (await this.composio.isConnected(userId, toolkit)) {
             return {
-              success: result.approved,
-              humanResponse: result.humanResponse,
-              observation: result.approved
-                ? `User connected ${access.toolkit} via Composio.`
-                : result.observation,
+              success: true,
+              observation: `${toolkit} is already connected. Use composio_execute.`,
             };
           }
 
-          if (access.loginUrl) {
-            await this.allowlist.assertUrlAllowed(access.loginUrl);
-            const page = await this.page();
-            await page.goto(access.loginUrl, {
-              waitUntil: 'domcontentloaded',
-              timeout: STAGEHAND_ACTION_TIMEOUT_MS,
-            });
-            await settleStagehandPage(page);
-            await this.assertCurrentPageAllowed();
-            await this.captureAfterAction(clientId, { force: true });
+          if (!this.composio.supportsOAuth(toolkit)) {
+            if (!this.composio.loginUrlFor(toolkit)) {
+              // OAuth-only app with no auth config: never fall back to a login page.
+              return {
+                success: false,
+                observation: `${toolkit} connections are not set up on this server. Do not open a login page; stop and tell the user ${toolkit} is unavailable.`,
+                error: 'Connection not configured',
+              };
+            }
+            return await this.legacyBrowserLogin(
+              clientId,
+              sessionId,
+              userId,
+              toolkit,
+              args.reason,
+            );
+          }
+
+          // Shopify needs the store name before Composio can build the link.
+          const connectionData: Record<string, string> = {};
+          if (toolkit === 'shopify') {
+            const stored = await this.composio.getStoredConnection(
+              userId,
+              toolkit,
+            );
+            let handle: string | null = stored?.metadata?.subdomain ?? null;
+            let prompt = `${args.reason} Enter the name of your store, like acme from acme.myshopify.com.`;
+            for (let attempt = 0; !handle && attempt < 3; attempt += 1) {
+              const asked = await this.approvals.requestApproval({
+                clientId,
+                sessionId,
+                kind: 'connect_input',
+                appName: toolkit,
+                question: 'Which Shopify store should I connect?',
+                context: prompt,
+                inputLabel: 'Store name',
+                inputPlaceholder: 'acme or acme.myshopify.com',
+              });
+              if (!asked.approved) {
+                return {
+                  success: false,
+                  humanResponse: asked.humanResponse,
+                  observation: asked.observation,
+                };
+              }
+              handle = parseShopifyHandle(asked.humanResponse ?? '');
+              prompt =
+                'That does not look like a Shopify store. Use the name from yourstore.myshopify.com (not a custom domain).';
+            }
+            if (!handle) {
+              return {
+                success: false,
+                observation:
+                  'No valid Shopify store name was given. Stop and tell the user to connect Shopify from their connected apps.',
+                error: 'Invalid store name',
+              };
+            }
+            connectionData.subdomain = handle;
+          }
+
+          const access = await this.composio.requestAccess(
+            userId,
+            toolkit,
+            connectionData,
+          );
+          if (access.mode !== 'composio') {
+            // No manual-login fallback for OAuth apps: report and stop.
+            return {
+              success: false,
+              observation:
+                access.mode === 'unavailable'
+                  ? `${access.reason} Do not try to log in through the browser; tell the user the connection is unavailable.`
+                  : 'Secure connection unavailable.',
+              error: 'Connection unavailable',
+            };
           }
 
           const result = await this.approvals.requestApproval({
             clientId,
-            sessionId: session?.sessionId ?? clientId,
-            kind: 'login',
+            sessionId,
+            kind: 'connect',
             appName: access.toolkit,
-            question: `Please sign in to ${access.toolkit} in the live browser.`,
-            context: `${args.reason} ${access.reason} Complete login or MFA on the left, then confirm here.`,
+            connectUrl: access.connectUrl,
+            question: `Connect ${access.toolkit} securely to continue.`,
+            context: `${args.reason} Open the secure link, approve access, then confirm. Tokens stay with Composio — never paste secrets here.`,
           });
+          if (!result.approved) {
+            return {
+              success: false,
+              humanResponse: result.humanResponse,
+              observation: result.observation,
+            };
+          }
+          // The confirm click is not proof — check Composio for the connection.
+          const connected = await this.composio.waitUntilConnected(
+            userId,
+            access.toolkit,
+          );
+          if (connected) {
+            this.events.emit('connection_ready', {
+              clientId,
+              toolkit: access.toolkit,
+            });
+          }
           return {
-            success: result.approved,
+            success: connected,
             humanResponse: result.humanResponse,
-            observation: result.approved
-              ? `User signed into ${access.toolkit} in the live browser.`
-              : result.observation,
+            observation: connected
+              ? `User connected ${access.toolkit}.`
+              : `User confirmed, but ${access.toolkit} is not connected yet. Call request_app_connection again so they can finish the secure link.`,
+            error: connected ? undefined : 'App not connected',
           };
         } catch (error) {
           return fail('request_app_connection failed', error);
@@ -934,14 +1014,57 @@ export class StagehandToolsService {
     });
   }
 
+  /** Apps without a Composio auth config yet still use the live browser login. */
+  private async legacyBrowserLogin(
+    clientId: string,
+    sessionId: string,
+    userId: string,
+    toolkit: string,
+    reason: string,
+  ): Promise<ToolResult> {
+    const access = await this.composio.requestAccess(userId, toolkit);
+    if (access.mode !== 'browser_login') {
+      return {
+        success: false,
+        observation: `${toolkit} cannot be connected right now.`,
+        error: 'Connection unavailable',
+      };
+    }
+    await this.allowlist.assertUrlAllowed(access.loginUrl);
+    const page = await this.page();
+    await page.goto(access.loginUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: STAGEHAND_ACTION_TIMEOUT_MS,
+    });
+    await settleStagehandPage(page);
+    await this.assertCurrentPageAllowed();
+    await this.captureAfterAction(clientId, { force: true });
+
+    const result = await this.approvals.requestApproval({
+      clientId,
+      sessionId,
+      kind: 'login',
+      appName: access.toolkit,
+      question: `Please sign in to ${access.toolkit} in the live browser.`,
+      context: `${reason} ${access.reason} Complete login or MFA on the left, then confirm here.`,
+    });
+    return {
+      success: result.approved,
+      humanResponse: result.humanResponse,
+      observation: result.approved
+        ? `User signed into ${access.toolkit} in the live browser.`
+        : result.observation,
+    };
+  }
+
   private composioExecuteTool() {
     const parameters = z.object({
       app: z
         .string()
-        .describe('Connected app: shopify, stripe, gmail, googledrive, slack'),
+        .describe('Connected app. Currently only shopify is supported.'),
       action: z
         .string()
-        .describe('Composio tool slug, e.g. STRIPE_LIST_PAYOUTS'),
+        .describe('Read-only Composio tool slug, e.g. SHOPIFY_GET_ORDER_LIST'),
       argumentsJson: z
         .string()
         .optional()
@@ -952,10 +1075,11 @@ export class StagehandToolsService {
     return this.defineTool({
       name: 'composio_execute',
       description:
-        'Run a read/write action on a Composio-connected app. Sensitive writes still require ask_human first.',
+        'Run a read-only action on a connected app (orders, products, customers). Writes are not available.',
       parameters,
       execute: async (args): Promise<ToolResult> => {
         try {
+          const userId = this.toolCtx.requireUserId();
           if (looksSensitiveAction(`${args.action} ${args.reason}`)) {
             if (!this.toolCtx.hasHumanApproval()) {
               return {
@@ -968,8 +1092,7 @@ export class StagehandToolsService {
             this.toolCtx.consumeHumanApproval();
           }
 
-          const connected = await this.composio.isConnected(args.app);
-          if (!connected) {
+          if (!(await this.composio.isConnected(userId, args.app))) {
             return {
               success: false,
               observation: `${args.app} is not connected. Call request_app_connection first.`,
@@ -978,6 +1101,7 @@ export class StagehandToolsService {
           }
 
           const result = await this.composio.executeAction({
+            userId,
             toolkit: args.app,
             action: args.action,
             argumentsJson: args.argumentsJson,
@@ -997,7 +1121,20 @@ export class StagehandToolsService {
 
   private doneTool() {
     const parameters = z.object({
-      summary: z.string().describe('Clear summary of accomplishments'),
+      summary: z
+        .string()
+        .describe(
+          'Markdown answer for the user: lead with the result, use short bullets or bold for key values. On failure, say what went wrong.',
+        ),
+      outcome: taskOutcomeSchema
+        .optional()
+        .describe(
+          'success = goal met; partial = some of it done; failed = goal not met',
+        ),
+      failureReason: z
+        .string()
+        .optional()
+        .describe('One sentence on why, when outcome is partial or failed'),
       extractedData: z
         .string()
         .describe('JSON string of structured data for the active task'),
@@ -1032,7 +1169,7 @@ export class StagehandToolsService {
           const taskType: TaskType =
             args.taskType ??
             this.toolCtx.getTaskType() ??
-            'month_end_exception';
+            'quick_answer';
 
           const extractedData = parseExtractedData(taskType, parsedJson);
           this.toolCtx.setTaskType(taskType);
@@ -1047,6 +1184,8 @@ export class StagehandToolsService {
           const data: TaskResult = {
             taskType,
             summary: args.summary,
+            outcome: args.outcome ?? 'success',
+            ...(args.failureReason ? { failureReason: args.failureReason } : {}),
             extractedData,
             followUpActions,
             completedAt: Date.now(),

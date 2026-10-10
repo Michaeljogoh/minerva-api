@@ -1,18 +1,15 @@
-import { Controller, Get, Headers } from '@nestjs/common';
-import { GatewayAuthService } from '@modules/security/gateway-auth.service';
+import { Controller, Get, UseGuards } from '@nestjs/common';
+import { UserGuard } from '@modules/security/user.guard';
 import { ExternalModelService } from './external-model.service';
 
 @Controller('model')
+@UseGuards(UserGuard)
 export class ModelController {
-  constructor(
-    private readonly externalModels: ExternalModelService,
-    private readonly gatewayAuth: GatewayAuthService,
-  ) {}
+  constructor(private readonly externalModels: ExternalModelService) {}
 
   /** Which user-key providers and models this server allows. Contains no secrets. */
   @Get('options')
-  options(@Headers('x-api-key') apiKey?: string) {
-    this.gatewayAuth.assertAuthorized(apiKey);
+  options() {
     return this.externalModels.getOptions();
   }
 }

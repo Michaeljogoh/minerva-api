@@ -21,9 +21,10 @@ export class SessionService {
     private readonly sessions: Repository<SessionRecordEntity>,
   ) {}
 
-  async list(limit = 20): Promise<SessionRecordEntity[]> {
+  async list(userId: string, limit = 20): Promise<SessionRecordEntity[]> {
     const take = Math.min(Math.max(limit, 1), 100);
     return this.sessions.find({
+      where: { userId },
       order: { startedAt: 'DESC' },
       take,
       select: [
@@ -39,8 +40,9 @@ export class SessionService {
     });
   }
 
-  async getById(id: string): Promise<SessionRecordEntity> {
-    const record = await this.sessions.findOne({ where: { id } });
+  async getById(userId: string, id: string): Promise<SessionRecordEntity> {
+    // Another user's record is reported as missing, not forbidden.
+    const record = await this.sessions.findOne({ where: { id, userId } });
     if (!record) {
       throw new NotFoundException(`SessionRecord ${id} not found`);
     }

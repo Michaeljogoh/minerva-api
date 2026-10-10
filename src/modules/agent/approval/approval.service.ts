@@ -13,7 +13,8 @@ interface PendingApproval {
   timer: NodeJS.Timeout;
 }
 
-export type ApprovalKind = 'approval' | 'login' | 'connect';
+/** `connect_input` asks the user to type a value (e.g. a Shopify store name). */
+export type ApprovalKind = 'approval' | 'login' | 'connect' | 'connect_input';
 
 @Injectable()
 export class ApprovalService {
@@ -32,6 +33,8 @@ export class ApprovalService {
     kind?: ApprovalKind;
     connectUrl?: string;
     appName?: string;
+    inputLabel?: string;
+    inputPlaceholder?: string;
   }): Promise<{ approved: boolean; humanResponse?: string; observation: string }> {
     const approvalId = `${params.sessionId}-${Date.now()}`;
     const now = Date.now();
@@ -66,6 +69,8 @@ export class ApprovalService {
         kind: params.kind ?? 'approval',
         connectUrl: params.connectUrl,
         appName: params.appName,
+        inputLabel: params.inputLabel,
+        inputPlaceholder: params.inputPlaceholder,
       });
     });
 

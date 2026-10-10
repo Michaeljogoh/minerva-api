@@ -9,13 +9,14 @@ async function bootstrap() {
 
   const frontendUrl =
   config.get<string>('frontendUrl') ?? 'http://localhost:3000';
+
   app.enableCors({
     origin: frontendUrl,
     credentials: true,
   });
   app.useWebSocketAdapter(new CorsIoAdapter(app, frontendUrl));
 
-  const port = config.get<number>('port') ?? 3001;
+  const port = config.get<number>('port') ?? 3341;
   await app.listen(port);
   console.log(`Backend listening on port ${port}`);
 }

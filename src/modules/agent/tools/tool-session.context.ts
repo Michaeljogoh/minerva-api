@@ -8,6 +8,7 @@ import type {
 
 interface RunContext {
   clientId: string;
+  userId: string;
   taskType: TaskType | null;
   screenshotOnly: boolean;
   runStartedAt: number;
@@ -17,6 +18,7 @@ interface RunContext {
 
 export interface RunContextInit {
   clientId: string;
+  userId: string;
   taskType?: TaskType | null;
   screenshotOnly?: boolean;
   externalModel?: ExternalModelConfig | null;
@@ -39,6 +41,7 @@ export class ToolSessionContext implements ModelRunConfigSource {
   ): AsyncGenerator<T, void, undefined> {
     const store: RunContext = {
       clientId: init.clientId,
+      userId: init.userId,
       taskType: init.taskType ?? null,
       screenshotOnly: init.screenshotOnly ?? false,
       runStartedAt: Date.now(),
@@ -73,6 +76,15 @@ export class ToolSessionContext implements ModelRunConfigSource {
       throw new Error('ToolSessionContext: no active clientId');
     }
     return ctx.clientId;
+  }
+
+  /** Verified account id of whoever started this run. Never model-supplied. */
+  requireUserId(): string {
+    const ctx = this.storage.getStore();
+    if (!ctx?.userId) {
+      throw new Error('ToolSessionContext: no active userId');
+    }
+    return ctx.userId;
   }
 
   getExternalModel(): ExternalModelConfig | null {

@@ -8,7 +8,12 @@ export const taskTypeSchema = z.enum([
   'commerce_reconciliation',
   'bank_rec_diff',
   'receipt_chase',
+  'quick_answer',
 ]);
+
+export const taskOutcomeSchema = z.enum(['success', 'partial', 'failed']);
+
+export type TaskOutcome = z.infer<typeof taskOutcomeSchema>;
 
 export type TaskType = z.infer<typeof taskTypeSchema>;
 
@@ -187,19 +192,33 @@ export const receiptChaseResultSchema = z.object({
 
 export type ReceiptChaseResult = z.infer<typeof receiptChaseResultSchema>;
 
+export const quickAnswerResultSchema = z.object({
+  answer: z.string(),
+  facts: z
+    .array(z.object({ label: z.string(), value: z.string() }))
+    .default([]),
+});
+
+export type QuickAnswerResult = z.infer<typeof quickAnswerResultSchema>;
+
 export const taskExtractedDataSchema = z.union([
   monthEndExceptionReportSchema,
   taxCodeDeltaBriefResultSchema,
   commerceReconciliationResultSchema,
   bankRecDiffResultSchema,
   receiptChaseResultSchema,
+  quickAnswerResultSchema,
 ]);
 
 export type TaskExtractedData = z.infer<typeof taskExtractedDataSchema>;
 
 export const taskResultSchema = z.object({
   taskType: taskTypeSchema,
+  /** Markdown answer shown to the user. */
   summary: z.string(),
+  /** Absent on older saved results; treat as success. */
+  outcome: taskOutcomeSchema.optional(),
+  failureReason: z.string().optional(),
   extractedData: taskExtractedDataSchema,
   followUpActions: z.array(z.string()).optional(),
   completedAt: z.number(),
@@ -215,6 +234,7 @@ const schemaByTaskType = {
   commerce_reconciliation: commerceReconciliationResultSchema,
   bank_rec_diff: bankRecDiffResultSchema,
   receipt_chase: receiptChaseResultSchema,
+  quick_answer: quickAnswerResultSchema,
 } as const;
 
 /** Validate done.extractedData for the active task type before task_complete. */

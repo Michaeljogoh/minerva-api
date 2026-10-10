@@ -26,6 +26,7 @@ import {
 import { SessionService } from '@modules/persistence/session.service';
 import { RateLimitService } from '@modules/security/rate-limit.service';
 import { GatewayAuthService } from '@modules/security/gateway-auth.service';
+import { UserAuthService } from '@modules/security/user-auth.service';
 import { LIVE_VIEW_CLIENT_REFRESH_MIN_MS } from '@common/constants/session-lifecycle.constants';
 import {
   ExternalModelService,
@@ -78,13 +79,25 @@ export class AgentGateway
     private readonly approvals: ApprovalService,
     private readonly rateLimit: RateLimitService,
     private readonly gatewayAuth: GatewayAuthService,
+    private readonly userAuth: UserAuthService,
     private readonly taskRuns: TaskRunCoordinator,
     private readonly eventBridge: GatewayEventBridge,
     private readonly sessions: SessionService,
     private readonly externalModels: ExternalModelService,
   ) {}
 
-  afterInit(): void {
+  afterInit(server: Server): void {
+    // Runs before `connection`, so no event is handled until the user is verified.
+    server.use((socket, next) => {
+      this.userAuth
+        .verifySocket(socket)
+        .then(({ userId }) => {
+          socket.data.userId = userId;
+          next();
+        })
+        .catch(() => next(new Error('Unauthorized')));
+    });
+
     this.eventBridge.attach({
       emitToClient: (clientId, event, payload) =>
         this.emitToClient(clientId, event, payload),
@@ -181,6 +194,7 @@ export class AgentGateway
 
       await this.taskRuns.execute({
         clientId: client.id,
+        userId: client.data.userId as string,
         goal: parsed.data.goal,
         taskType: parsed.data.taskType,
         usePlanner: parsed.data.usePlanner,

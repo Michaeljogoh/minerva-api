@@ -43,6 +43,7 @@ export class GatewayEventBridge implements OnModuleInit, OnModuleDestroy {
     this.toolEvents.on('task_complete', this.onTaskComplete);
     this.toolEvents.on('browser_crash', this.onBrowserCrash);
     this.toolEvents.on('live_view', this.onLiveView);
+    this.toolEvents.on('connection_ready', this.onConnectionReady);
   }
 
   onModuleDestroy(): void {
@@ -51,6 +52,7 @@ export class GatewayEventBridge implements OnModuleInit, OnModuleDestroy {
     this.toolEvents.off('task_complete', this.onTaskComplete);
     this.toolEvents.off('browser_crash', this.onBrowserCrash);
     this.toolEvents.off('live_view', this.onLiveView);
+    this.toolEvents.off('connection_ready', this.onConnectionReady);
   }
 
   private recordIdFor(clientId: string): string | undefined {
@@ -88,9 +90,11 @@ export class GatewayEventBridge implements OnModuleInit, OnModuleDestroy {
     approvalId: string;
     question: string;
     context: string;
-    kind?: 'approval' | 'login' | 'connect';
+    kind?: 'approval' | 'login' | 'connect' | 'connect_input';
     connectUrl?: string;
     appName?: string;
+    inputLabel?: string;
+    inputPlaceholder?: string;
   }) => {
     this.sessions.queueStep(
       this.recordIdFor(payload.clientId),
@@ -106,6 +110,17 @@ export class GatewayEventBridge implements OnModuleInit, OnModuleDestroy {
       kind: payload.kind ?? 'approval',
       connectUrl: payload.connectUrl,
       appName: payload.appName,
+      inputLabel: payload.inputLabel,
+      inputPlaceholder: payload.inputPlaceholder,
+    });
+  };
+
+  private readonly onConnectionReady = (payload: {
+    clientId: string;
+    toolkit: string;
+  }) => {
+    this.host?.emitToClient(payload.clientId, 'connection_ready', {
+      toolkit: payload.toolkit,
     });
   };
 

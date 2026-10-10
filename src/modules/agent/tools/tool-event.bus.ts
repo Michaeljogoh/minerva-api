@@ -17,9 +17,15 @@ export type ToolEventMap = {
     approvalId: string;
     question: string;
     context: string;
-    kind?: 'approval' | 'login' | 'connect';
+    kind?: 'approval' | 'login' | 'connect' | 'connect_input';
     connectUrl?: string;
     appName?: string;
+    inputLabel?: string;
+    inputPlaceholder?: string;
+  };
+  connection_ready: {
+    clientId: string;
+    toolkit: string;
   };
   task_complete: {
     clientId: string;

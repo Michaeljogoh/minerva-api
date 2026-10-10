@@ -2,6 +2,8 @@ import { config as loadEnv } from 'dotenv';
 import { join } from 'node:path';
 import { DataSource } from 'typeorm';
 import { SessionRecordEntity } from '../modules/persistence/entities/session-record.entity';
+import { UserAppConnectionEntity } from '../modules/persistence/entities/user-app-connection.entity';
+import { UserBrowserProfileEntity } from '../modules/persistence/entities/user-browser-profile.entity';
 
 loadEnv();
 
@@ -14,7 +16,11 @@ export default new DataSource(
     ? {
         type: 'postgres',
         url,
-        entities: [SessionRecordEntity],
+        entities: [
+          SessionRecordEntity,
+          UserAppConnectionEntity,
+          UserBrowserProfileEntity,
+        ],
         migrations: [migrationsPath],
         synchronize: false,
         logging: process.env.NODE_ENV === 'development',
@@ -26,7 +32,11 @@ export default new DataSource(
         username: process.env.DB_USER,
         password: process.env.DB_PASSWORD,
         database: process.env.DB_NAME ?? 'minerva_agent',
-        entities: [SessionRecordEntity],
+        entities: [
+          SessionRecordEntity,
+          UserAppConnectionEntity,
+          UserBrowserProfileEntity,
+        ],
         migrations: [migrationsPath],
         synchronize: false,
         logging: process.env.NODE_ENV === 'development',

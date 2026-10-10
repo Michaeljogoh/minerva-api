@@ -24,6 +24,10 @@ export interface BrowserSession extends StagehandConnection {
   liveUrl: string;
   createdAt: Date;
   recordId: string;
+  /** Owner; set so the saved browser profile can be finalized on close. */
+  userId?: string;
+  /** Steel profile this session saves to, when it persists one. */
+  profileId?: string;
 }
 
 export interface BrowserCloseOpts {

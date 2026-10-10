@@ -16,6 +16,8 @@ import { ToolCallingOrchestrator } from './orchestrator/tool-calling.orchestrato
 
 export interface RunGoalParams {
   clientId: string;
+  /** Verified account id (from the socket handshake). */
+  userId: string;
   goal: string;
   taskType?: TaskType | null;
   /** When liveUrl is unavailable — screenshot-only degradation (§13.4). */
@@ -54,6 +56,7 @@ export class BrowserAgent {
   ): AsyncGenerator<AgentEventLike, void, undefined> {
     const {
       clientId,
+      userId,
       goal,
       taskType,
       screenshotOnly = false,
@@ -68,10 +71,11 @@ export class BrowserAgent {
     }
 
     yield* this.toolCtx.bindGenerator(
-      { clientId, taskType, screenshotOnly, externalModel },
+      { clientId, userId, taskType, screenshotOnly, externalModel },
       () =>
         this.runGoalInner({
           clientId,
+          userId,
           goal,
           taskType,
           usePlanner,

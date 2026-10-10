@@ -24,6 +24,16 @@ export function validateEnv(
         'OPENAI_API_KEY is required. Add it to .env — create a key at https://platform.openai.com/api-keys',
       );
     }
+    if (!String(config.AUTH_ISSUER ?? '').trim()) {
+      throw new Error(
+        'AUTH_ISSUER is required (your Clerk Frontend API URL, e.g. https://xxx.clerk.accounts.dev).',
+      );
+    }
+    if (!String(config.COMPOSIO_API_KEY ?? '').trim()) {
+      throw new Error(
+        'COMPOSIO_API_KEY is required. App connections no longer fall back to manual login.',
+      );
+    }
     if (!String(config.OPENAI_MODEL ?? '').trim()) {
       throw new Error('OPENAI_MODEL is required.');
     }
